@@ -1,2 +1,4 @@
 /.venv
 **/Road Traffic Fine Management Process_1_all
+*.xes
+*.xes.gz

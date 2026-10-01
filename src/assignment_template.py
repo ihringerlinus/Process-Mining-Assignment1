@@ -18,7 +18,7 @@ def _():
     import pandas as pd 
     import pm4py
 
-    return mo, pm4py
+    return mo, pd, pm4py
 
 
 @app.cell
@@ -27,6 +27,20 @@ def _(pm4py):
     print(len(event_log_from_disk), 'events read.')
     event_log_from_disk
     return (event_log_from_disk,)
+
+
+@app.cell
+def _(event_log_from_disk):
+    CASE_ID = 'case:concept:name'
+    ACTIVITY = 'concept:name'
+    TIMESTAMP = 'time:timestamp'
+
+    event_log = event_log_from_disk.copy()
+    event_log['original_order'] = range(len(event_log))
+    event_log = event_log.sort_values([CASE_ID, TIMESTAMP, 'original_order']).reset_index(drop=True)
+
+    event_log.dtypes
+    return ACTIVITY, CASE_ID, TIMESTAMP, event_log
 
 
 @app.cell(hide_code=True)
@@ -197,8 +211,261 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
+    Wir erwarten sekundengenaue Zeitstempel, da die Events von einem IT-System erfasst werden.
+    """)
+    return
+
+
+@app.cell
+def _(TIMESTAMP, event_log, mo):
+    _ts = event_log[TIMESTAMP]
+    if _ts.dt.tz is not None:
+        _ts = _ts.dt.tz_convert('Europe/Rome')
+
+    mo.md(f"""
+    - Zeitzone im Log: **{event_log[TIMESTAMP].dt.tz}**
+    - Events mit Stunde ≠ 0: **{(_ts.dt.hour != 0).sum()}**
+    - Events mit Minute ≠ 0: **{(_ts.dt.minute != 0).sum()}**
+    - Events mit Sekunde ≠ 0: **{(_ts.dt.second != 0).sum()}**
+    """)
+    return
+
+
+@app.cell
+def _(CASE_ID, TIMESTAMP, event_log, mo):
+    _same_day = event_log.duplicated([CASE_ID, TIMESTAMP], keep=False)
+    mo.md(f"""
+    Events, die im selben Case denselben Tag haben wie ein anderes Event: **{_same_day.sum()}**,
+    verteilt auf **{event_log.loc[_same_day, CASE_ID].nunique()}** Cases
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Die Hypothese ist widerlegt: Alle Timestamps sind tagesgenau (Mitternacht italienischer Zeit; im Log als UTC gespeichert, wodurch ohne Umrechnung 22:00/23:00 Uhr erscheint). Konsequenzen: (1) Durchlaufzeiten können nur in Tagen gemessen werden. (2) Bei Events am selben Tag im selben Case ist die Reihenfolge nicht durch den Timestamp bestimmt; 21308 Events in 9166 Cases sind betroffen. Für Enrichments wie kumulierte Zahlungen verwenden wir daher die Originalreihenfolge des Logs als zweites Sortierkriterium.
+    Finding (Datenerfassung): Uhrzeit mit erfassen, damit die Reihenfolge von Events am selben Tag eindeutig ist.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
     ## Task 2.2
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 2.2a – Hypothese
+
+    Jede Aktivität hat nur die Attribute, die für sie fachlich relevant sind (z. B. `paymentAmount` bei *Payment*, `expense` bei *Send Fine*). Da das Log aus einem Verwaltungssystem stammt, das bestimmte Felder pro Schritt erzwingt, erwarten wir kaum fehlende Werte. Wir vermuten aber, dass fehlende Information teils nicht als leerer Wert, sondern als Standardwert (z. B. `0` oder `NIL`) gespeichert ist.
+    """)
+    return
+
+
+@app.cell
+def _(ACTIVITY, CASE_ID, TIMESTAMP, event_log):
+    schema_attrs = [c for c in event_log.columns
+                    if c not in [CASE_ID, ACTIVITY, TIMESTAMP, 'original_order']]
+
+    schema_counts = event_log[schema_attrs].notna().groupby(event_log[ACTIVITY]).sum()
+    schema_counts.insert(0, 'n_events', event_log.groupby(ACTIVITY).size())
+    schema_counts
+    return schema_attrs, schema_counts
+
+
+@app.cell
+def _(pd, schema_attrs, schema_counts):
+    _rows = []
+    for _act, _row in schema_counts.iterrows():
+        _n = _row['n_events']
+        for _attr in schema_attrs:
+            if 0 < _row[_attr] < _n:
+                _rows.append({'activity': _act, 'attribute': _attr,
+                              'events': _n, 'missing': _n - _row[_attr]})
+    missing_values = pd.DataFrame(_rows)
+    missing_values
+    return
+
+
+@app.cell
+def _(ACTIVITY, event_log, schema_attrs):
+    _num_cols = event_log[schema_attrs].select_dtypes('number').columns
+    zero_counts = (event_log[_num_cols] == 0).groupby(event_log[ACTIVITY]).sum()
+    zero_counts.T
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 2.2a – Ergebnis
+
+    **Fehlende Werte (`NaN`):** Nur ein Attribut ist unvollständig: `lastSent` fehlt bei **1'631 von 79'860** *Insert Fine Notification*-Events (ca. 2 %). Alle anderen Attribute sind in den Schemas, zu denen sie gehören, vollständig.
+
+    **Nullwerte:** Die Prüfung auf `0` zeigt, dass die Vollständigkeit teilweise nur formal ist:
+
+    - `totalPaymentAmount` ist bei *Create Fine* in **allen 150'370** Events `0`. Fachlich plausibel (zu Beginn ist noch nichts bezahlt), das Attribut wird bei *Create Fine* also nur mit einem Startwert initialisiert.
+    - `points` ist bei *Create Fine* in **146'822 von 150'370** Fällen `0`; nur rund 3'500 Bussen führen zu Punkteabzug. Hier bedeutet `0` vermutlich "keine Punkte", ein fehlender Wert lässt sich davon aber nicht unterscheiden.
+    - `amount` ist bei **36** *Create Fine*- und **18** *Add penalty*-Events `0`. Eine Busse bzw. ein Strafzuschlag von 0 ist fachlich unerwartet.
+    - Bei *Payment* ist `paymentAmount` in **3** Events `0` und `totalPaymentAmount` in **2** Events `0`. Eine Zahlung über 0 bzw. eine kumulierte Zahlungssumme von 0 *nach* einer Zahlung widerspricht der Bedeutung der Aktivität (Datenfehler oder Stornierung/Korrektur?).
+    - `expense` ist bei *Send Fine* in **2'860 von 103'987** Events `0` (ca. 2.8 %). Möglicherweise wurden diese Bussen ohne Postkosten zugestellt, oder die Kosten wurden nicht erfasst.
+    - `matricola` ist bei allen **555** *Appeal to Judge*-Events `0` und enthält damit keinerlei Information.
+
+    **Fazit:** Die Hypothese ist teilweise bestätigt. Echte fehlende Werte sind selten, aber `0` wird als Standardwert verwendet und verdeckt möglicherweise fehlende Information.
+
+    **Findings:**
+
+    - Warum fehlt `lastSent` bei 1'631 Notifications? Haben diese Cases einen anderen Verlauf?
+    - Cases mit `amount = 0` inspizieren.
+    - Die 3 *Payment*-Events mit `paymentAmount = 0` inspizieren: Gehören sie zu den 2 Events mit `totalPaymentAmount = 0`? (relevant für Task 2.4b)
+    - Unterscheiden sich Cases mit `expense = 0` im weiteren Verlauf, z. B. bei *Insert Fine Notification*?
+    - *Empfehlung Datenerfassung:* Nicht erfasste Werte als leer (`NULL`) statt als `0` speichern, damit "nicht vorhanden" und "nicht erfasst" unterscheidbar sind. `matricola` korrekt befüllen oder entfernen.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 2.2b – Hypothese
+
+    Wir erwarten, dass die Geldbeträge mehreren Aktivitäten gemeinsam sind: `amount` bei *Create Fine* (ursprüngliche Busse) und *Add penalty* (Busse mit Zuschlag), `totalPaymentAmount` bei *Create Fine* und *Payment*. Fachliche Attribute wie `points` oder `vehicleClass` sollten exklusiv bei *Create Fine* vorkommen. `totalPaymentAmount` ist laut Namen kumulativ; bei `amount` vermuten wir, dass es bei *Add penalty* den neuen Gesamtbetrag (also einen kumulativen Wert) enthält.
+    """)
+    return
+
+
+@app.cell
+def _(event_log, pd, schema_attrs, schema_counts):
+    _in_schema = schema_counts[schema_attrs] > 0
+
+    shared_attrs = pd.DataFrame({
+        'n_activities': _in_schema.sum(),
+        'activities': _in_schema.apply(lambda col: ', '.join(col.index[col])),
+        'numeric': [pd.api.types.is_numeric_dtype(event_log[a]) for a in schema_attrs],
+    })
+    shared_attrs = shared_attrs[(shared_attrs['n_activities'] > 1) &
+                                (shared_attrs['n_activities'] < len(schema_counts))]
+    shared_attrs
+    return
+
+
+@app.cell
+def _(ACTIVITY, CASE_ID, event_log):
+    _initial = event_log[event_log[ACTIVITY] == 'Create Fine'].set_index(CASE_ID)['amount']
+    _pen = event_log[event_log[ACTIVITY] == 'Add penalty'][[CASE_ID, 'amount']].copy()
+    _pen['initial_amount'] = _pen[CASE_ID].map(_initial)
+    _pen['ratio'] = (_pen['amount'] / _pen['initial_amount']).round(2)
+    _pen['ratio'].value_counts().head(10)
+    return
+
+
+@app.cell
+def _(ACTIVITY, CASE_ID, TIMESTAMP, event_log):
+    _pay = event_log[event_log[ACTIVITY] == 'Payment'].copy()
+    _pay['n_payment'] = _pay.groupby(CASE_ID).cumcount() + 1
+    _multi = _pay[_pay.groupby(CASE_ID)[CASE_ID].transform('size') > 1]
+    _multi[[CASE_ID, TIMESTAMP, 'n_payment', 'paymentAmount', 'totalPaymentAmount']].head(15)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 2.2b – Ergebnis
+
+    Es gibt vier geteilte (nicht-globale) Attribute:
+
+    | Attribut | Aktivitäten | Typ | Klassifikation |
+    |---|---|---|---|
+    | `totalPaymentAmount` | Create Fine, Payment | numerisch | **case-kumulativ** |
+    | `amount` | Create Fine, Add penalty | numerisch | **case-kumulativ** |
+    | `org:resource` | Create Fine, Appeal to Judge | kategorial | – |
+    | `dismissal` | Create Fine, Send Appeal to Prefecture, Appeal to Judge | kategorial | – |
+
+    **`amount`:** Bei *Add penalty* beträgt `amount` fast immer rund das **Doppelte** des Betrags bei *Create Fine* (Verhältnis 1.96–2.06 in den häufigsten Fällen). Das Attribut enthält also den neuen Gesamtbetrag inklusive Strafzuschlag und nicht nur den Zuschlag selbst. Es ist damit kumulativ innerhalb eines Cases.
+
+    **`totalPaymentAmount`:** In Cases mit mehreren Zahlungen entspricht `totalPaymentAmount` der Summe der bisherigen `paymentAmount`-Werte (z. B. Case A10009: 35 + 22 = 57). Es ist damit kumulativ innerhalb eines Cases; das inkrementelle Gegenstück ist `paymentAmount`. Ob die Summe in allen Cases stimmt, prüfen wir in Task 2.4b.
+
+    **Fazit:** Die Hypothese ist für die numerischen Attribute bestätigt. Nicht erwartet hatten wir, dass auch `org:resource` und `dismissal` geteilt sind. Bei `dismissal` ist das plausibel, da bei den Einsprache-Aktivitäten über eine Aufhebung entschieden wird.
+
+    **Findings:**
+
+    - Der Strafzuschlag verdoppelt die Busse nicht exakt (Verhältnisse von 1.96 bis 2.06, Ausreisser bei 2.5 und 4). Mögliche Ursachen: Rundung, unterschiedliche Regeln je Artikel oder zusätzliche Gebühren. Weiter untersuchen.
+    - `org:resource` ist nur bei *Create Fine* und *Appeal to Judge* erfasst. Für alle anderen Schritte ist nicht nachvollziehbar, wer sie ausgeführt hat. *Empfehlung Datenerfassung:* Ressource bei allen Aktivitäten erfassen.
+    - Die Benennung ist uneinheitlich: `totalPaymentAmount` zeigt im Namen an, dass es kumulativ ist, `amount` nicht. *Empfehlung:* z. B. in `totalFineAmount` umbenennen.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 2.3 – Case-Inspektion
+
+    Wir wählen Case **A10009**, weil er laut Task 2.2b mehrere Zahlungen enthält und damit viele Attribute im Zusammenspiel zeigt.
+
+    **Hypothese:** Wir erwarten den typischen Ablauf einer nicht sofort bezahlten Busse: *Create Fine* → *Send Fine* (mit Versandkosten) → *Insert Fine Notification* → *Add penalty* (Busse verdoppelt, da nicht fristgerecht bezahlt) → Zahlungen in Raten, bis der Gesamtbetrag aus Busse, Zuschlag und Kosten beglichen ist.
+    """)
+    return
+
+
+@app.cell
+def _(ACTIVITY, CASE_ID, TIMESTAMP, event_log):
+    _case_id = 'A10009'
+    _cols = [TIMESTAMP, ACTIVITY, 'amount', 'expense', 'paymentAmount', 'totalPaymentAmount',
+             'points', 'article', 'vehicleClass', 'notificationType', 'lastSent',
+             'dismissal', 'org:resource', 'matricola']
+    case_2_3 = event_log[event_log[CASE_ID] == _case_id][_cols].copy()
+    case_2_3[TIMESTAMP] = case_2_3[TIMESTAMP].dt.tz_convert('Europe/Rome').dt.date
+    print(case_2_3.to_string())
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 2.3 – Ergebnis: Case A10009
+
+    - **20.03.2007 – Create Fine:** Eine Busse von **22 €** wird ausgestellt, gestützt auf Artikel 7, für ein Fahrzeug der Klasse A. Es gibt keinen Punkteabzug (`points = 0`). Erfasst wurde sie von Ressource 537. `dismissal = NIL` ist der Anfangswert (keine Aufhebung), `totalPaymentAmount = 0` (noch nichts bezahlt).
+    - **17.07.2007 – Send Fine:** Die Busse wird erst **119 Tage** nach der Ausstellung verschickt. Dabei fallen **13 €** Versandkosten (`expense`) an.
+    - **23.07.2007 – Insert Fine Notification:** **6 Tage** nach dem Versand wird die Zustellung registriert. Empfänger ist der Fahrzeughalter (`notificationType = P`). `lastSent` hat ebenfalls den Wert P.
+    - **21.09.2007 – Add penalty:** Genau **60 Tage** nach der Zustellung wird ein Strafzuschlag erhoben. `amount` steigt auf **44 €**, also auf das Doppelte der ursprünglichen Busse. Das passt zu einer 60-tägigen Zahlungsfrist, die verstrichen ist, ohne dass bezahlt wurde.
+    - **01.10.2007 – Payment:** 10 Tage später zahlt der Halter **35 €** (`totalPaymentAmount = 35`). Das entspricht genau der ursprünglichen Busse plus Versandkosten (22 + 13).
+    - **31.10.2007 – Payment:** Einen Monat später folgt eine zweite Zahlung von **22 €**. Damit sind insgesamt **57 €** bezahlt, was exakt dem geschuldeten Gesamtbetrag entspricht: 44 € (Busse inkl. Zuschlag) + 13 € (Kosten). Der Case ist abgeschlossen.
+
+    **Interpretation:** Die Hypothese ist bestätigt. Der Case folgt dem erwarteten Ablauf, und die Beträge sind konsistent: `amount` ist kumulativ (Busse inkl. Zuschlag), `totalPaymentAmount` summiert die Zahlungen korrekt, und am Ende ist kein Betrag mehr offen. Die erste Zahlung entspricht genau dem Betrag *ohne* Zuschlag. Vermutlich hat der Halter zunächst nur die ursprüngliche Forderung beglichen, ohne vom Zuschlag zu wissen, und den Zuschlag dann nachbezahlt. Der ganze Case dauert **225 Tage**, davon entfallen allein 119 Tage auf die Zeit bis zum Versand.
+
+    **Findings:**
+
+    - Zwischen *Create Fine* und *Send Fine* liegen fast 4 Monate. Wie lange dauert das im Durchschnitt, und gibt es gesetzliche Fristen dafür? (Kandidat für die Performance-Analyse in Session 6)
+    - `lastSent` (Bedeutung unbekannt) stimmt in diesem Case mit `notificationType` überein (P). Eine Kreuztabelle über alle 79'860 *Insert Fine Notification*-Events zeigt aber, dass das nicht generell gilt: Nur in rund 58 % der Fälle sind die Werte gleich. `lastSent` hat zudem einen zusätzlichen Wert **N** (30'313 Events, fast alle bei `notificationType = P`), und in 1'380 Fällen steht `notificationType = P` mit `lastSent = C`, umgekehrt nie. Das Attribut ist also nicht redundant, seine Bedeutung bleibt aber unklar. *Empfehlung Datenerfassung:* Attribute und ihre Wertebereiche dokumentieren.
+    - Zahlen Offender nach einem Zuschlag häufig zuerst nur den ursprünglichen Betrag? Das könnte auf eine unklare Kommunikation des Zuschlags hindeuten (Verbesserungsvorschlag für den Prozess).
+    """)
+    return
+
+
+@app.cell
+def _(ACTIVITY, event_log, pd):
+    _notif = event_log[event_log[ACTIVITY] == 'Insert Fine Notification']
+    pd.crosstab(_notif['notificationType'], _notif['lastSent'], dropna=False)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    """)
+    return
+
+
+@app.cell
+def _():
     return
 
 

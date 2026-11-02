@@ -1798,5 +1798,1282 @@ def _(mo):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # Session 5
+
+    ## Task 5.1
+
+    ### Task 5.1 - Hypothesis
+
+    We expect *Payment* to be repeated most often, because offenders pay in instalments. This is repetition, but not necessarily rework caused by an error. We expect *Create Fine* and *Add penalty* to occur only once per case, and the appeal activities to repeat rarely.
+    """)
+    return
+
+
+@app.cell
+def _(ACTIVITY, CASE_ID, TIMESTAMP, event_log_t5, mo, pd):
+    # how often each activity occurs in each case
+    activity_counts = event_log_t5.groupby([CASE_ID, ACTIVITY]).size().rename('n').reset_index()
+
+    _rework_summary = activity_counts.groupby(ACTIVITY).agg(
+        cases=('n', 'size'),
+        cases_with_rework=('n', lambda s: (s > 1).sum()),
+        extra_executions=('n', lambda s: (s - 1).sum()),
+        max_repetitions=('n', 'max'),
+    ).sort_values(['cases_with_rework', 'cases'], ascending=False)
+    _rework_summary['rework share %'] = (100 * _rework_summary['cases_with_rework'] / _rework_summary['cases']).round(2)
+
+    _rework_rows = activity_counts[activity_counts['n'] > 1]
+    _n_cases = event_log_t5[CASE_ID].nunique()
+    _n_rework = _rework_rows[CASE_ID].nunique()
+    _n_extra = _rework_summary['extra_executions'].sum()
+
+    # are the repetitions direct (A, A) or do other activities lie between them (A, B, A)?
+    _previous = event_log_t5.groupby(CASE_ID)[ACTIVITY].shift()
+    _direct = (_previous == event_log_t5[ACTIVITY]).sum()
+
+    # several payments of one case on the same day: same amount (double booking?) or different amounts?
+    _payments = event_log_t5[event_log_t5[ACTIVITY] == 'Payment']
+    _same_day = _payments[_payments.duplicated([CASE_ID, TIMESTAMP], keep=False)]
+    _same_day_groups = _same_day.groupby([CASE_ID, TIMESTAMP])['paymentAmount'].nunique()
+
+    mo.vstack([
+        _rework_summary,
+        mo.md(f"""
+    - Cases with rework: **{num(_n_rework)}** of {num(_n_cases)} (**{_n_rework / _n_cases:.2%}**)
+    - Extra executions: **{num(_n_extra)}** of {num(len(event_log_t5))} events (**{_n_extra / len(event_log_t5):.2%}**)
+    - Activities that are repeated in at least one case: **{sorted(_rework_rows[ACTIVITY].unique())}**
+    - Direct repetitions (self loops): **{num(_direct)}**, repetitions with other activities in between: **{num(_n_extra - _direct)}**
+    - Days on which one case has several payments: **{num(len(_same_day_groups))}**, of which with identical amounts: **{num((_same_day_groups == 1).sum())}**
+    """),
+        pd.crosstab(_rework_rows[ACTIVITY], _rework_rows['n']),
+    ])
+    return (activity_counts,)
+
+
+@app.cell
+def _(ACTIVITY, activity_counts, px):
+    _distribution = (
+        activity_counts[activity_counts[ACTIVITY] == 'Payment']['n']
+        .value_counts().sort_index().rename('cases').reset_index()
+    )
+    _distribution['n'] = _distribution['n'].astype(str)
+
+    _fig = px.bar(
+        _distribution, x='n', y='cases', text='cases', log_y=True, width=700,
+        title='Number of payments per case (cases with at least one payment, log scale)',
+        labels={'n': 'Payment events in the case', 'cases': 'Cases'},
+    )
+    _fig.update_traces(textposition='outside', cliponaxis=False)
+    _fig.update_layout(bargap=0.2, xaxis_type='category')
+    _fig
+    return
+
+
+@app.cell
+def _(ACTIVITY, CASE_ID, activity_counts, case_log_s3, event_log_t5, mo, pd):
+    def _penalty_between_payments(variant):
+        _positions = [_i for _i, _activity in enumerate(variant) if _activity == 'Payment']
+        return 'Add penalty' in variant[_positions[0]:_positions[-1]]
+
+    _short = {
+        'Create Fine': 'CF', 'Send Fine': 'SF', 'Insert Fine Notification': 'IFN', 'Add penalty': 'AP',
+        'Payment': 'P', 'Send for Credit Collection': 'SCC', 'Appeal to Judge': 'AJ',
+        'Insert Date Appeal to Prefecture': 'IDAP', 'Send Appeal to Prefecture': 'SAP',
+        'Receive Result Appeal from Prefecture': 'RRAP', 'Notify Result Appeal to Offender': 'NRAO',
+    }
+
+    # all cases with at least one payment, enriched with what we need to explain the repetitions
+    payment_cases = case_log_s3[case_log_s3.index.isin(
+        activity_counts.loc[activity_counts[ACTIVITY] == 'Payment', CASE_ID]
+    )].copy()
+    payment_cases['n_payments'] = activity_counts[activity_counts[ACTIVITY] == 'Payment'].set_index(CASE_ID)['n']
+    payment_cases['penalty_between'] = payment_cases['seq_variant'].apply(_penalty_between_payments)
+    _appeals = event_log_t5.loc[event_log_t5[ACTIVITY].isin(['Appeal to Judge', 'Insert Date Appeal to Prefecture']), CASE_ID].unique()
+    payment_cases['appeal'] = payment_cases.index.isin(_appeals)
+    payment_cases['initial_amount'] = event_log_t5.groupby(CASE_ID)['amount'].first()
+    payment_cases['total_expense'] = event_log_t5.groupby(CASE_ID)['expense'].sum()
+    payment_cases['total_paid'] = event_log_t5.groupby(CASE_ID)['paymentAmount'].sum().round(2)
+    payment_cases['first_payment'] = event_log_t5[event_log_t5[ACTIVITY] == 'Payment'].groupby(CASE_ID)['paymentAmount'].first()
+    payment_cases['variant'] = payment_cases['seq_variant'].apply(lambda v: ' > '.join(_short[_a] for _a in v))
+
+    _bands = pd.cut(payment_cases['n_payments'], [0, 1, 2, 3, 5, 9, 99], labels=['1', '2', '3', '4-5', '6-9', '10+'])
+    _by_band = payment_cases.groupby(_bands, observed=True).agg(
+        cases=('n_payments', 'size'),
+        median_initial_amount=('initial_amount', 'median'),
+        appeal_share=('appeal', 'mean'),
+        fully_paid_share=('paid', 'mean'),
+    ).round(3)
+
+    _rework = payment_cases[payment_cases['n_payments'] > 1]
+    _by_penalty = _rework.groupby('penalty_between').agg(
+        cases=('paid', 'size'), fully_paid=('paid', 'sum'), fully_paid_share=('paid', 'mean'),
+    ).round(3)
+
+    # the two dominating variants of the repetitions
+    _a = _rework[_rework['variant'] == 'CF > SF > IFN > AP > P > P']
+    _b = _rework[_rework['variant'] == 'CF > SF > IFN > P > AP > P']
+    _a_first_is_due = (_a['first_payment'] - (_a['initial_amount'] + _a['total_expense'])).abs() < 0.01
+    _b_paid_is_due = (_b['total_paid'] - (_b['initial_amount'] + _b['total_expense'])).abs() <= 1
+
+    _o = _rework['final_outstanding_amount']
+    mo.vstack([
+        mo.md("Cases with at least one payment, by number of payments:"),
+        _by_band,
+        mo.md("Cases with rework, by whether *Add penalty* lies between the first and the last payment:"),
+        _by_penalty,
+        mo.md("Most frequent variants of the cases with rework (CF = Create Fine, SF = Send Fine, IFN = Insert Fine Notification, AP = Add penalty, P = Payment):"),
+        _rework['variant'].value_counts().head(5),
+        mo.md(f"""
+    - Outstanding amount at the end of the cases with rework: below 0: **{num((_o < 0).sum())}**, exactly 0: **{num((_o == 0).sum())}**, up to 1: **{num(((_o > 0) & (_o <= 1)).sum())}**, above 1: **{num((_o > 1).sum())}**
+    - *CF > SF > IFN > AP > P > P*: **{num(len(_a))}** cases, fully paid: **{_a['paid'].mean():.1%}**, first payment = initial amount + expenses: **{num(_a_first_is_due.sum())}** ({_a_first_is_due.mean():.1%})
+    - *CF > SF > IFN > P > AP > P*: **{num(len(_b))}** cases, fully paid: **{_b['paid'].mean():.1%}**, sum of both payments = initial amount + expenses (± 1): **{num(_b_paid_is_due.sum())}** ({_b_paid_is_due.mean():.1%})
+    """),
+    ])
+    return (payment_cases,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 5.1a - Result
+
+    The hypothesis is confirmed, and more clear-cut than we expected: **_Payment_ is the only activity that repeats at all**. All other activities, including the appeal activities, occur at most once per case.
+
+    | Measure | Value |
+    |---|---|
+    | Cases with rework | 7'542 of 150'370 (5.02 %), or 10.82 % of the 69'715 cases with a payment |
+    | Extra executions | 7'886 of 561'470 events (1.40 %) |
+    | Cases with exactly 2 payments | 7'366 (97.7 % of the cases with rework) |
+    | Cases with 6 or more / 10 or more payments | 27 / 9 |
+    | Maximum | 15 payments (case C20817) |
+
+    The distribution has a long tail, so few repetitions per case and many repetitions in a case are two different phenomena (see the chart and the table by number of payments above). We found three things we did not expect:
+
+    1. **Half of the cases with rework do not end fully paid.** Only 50.7 % reach an outstanding amount of 0 or less, against 90.8 % of the cases with a single payment. Paying several times does not mean paying everything.
+    2. **Two variants make up 93 % of the cases with rework, and they end very differently.** In *... Add penalty > Payment > Payment* (3'736 cases) 93.7 % are fully paid. In *... Payment > Add penalty > Payment* (3'301 cases) only 1.9 % are.
+    3. **Many payments go together with high fines and appeals.** The median initial amount rises from 35 (one payment) to 656 (ten or more), and the share of cases with an appeal from 1.1 % to 77.8 %.
+
+    *Rework* is the slides' term for any repeated activity. The payments are not rework in the sense of an error being corrected. Of the 29 days on which a case has several payments, none has two identical amounts, so we find no sign of accidental double booking on the same day.
+    """)
+    return
+
+
+@app.cell
+def _(ACTIVITY, event_log_t5, mo, show_case):
+    _cols = [ACTIVITY, 'amount', 'expense', 'paymentAmount', 'cum_payment_amount', 'outstanding_amount']
+
+    mo.vstack([
+        mo.md("**A10009:** 2 payments after the penalty"),
+        show_case(event_log_t5, 'A10009', _cols),
+        mo.md("**A10798:** 2 payments, the penalty lies between them"),
+        show_case(event_log_t5, 'A10798', _cols),
+        mo.md("**A18543:** 2 payments, the first one settles everything before the penalty"),
+        show_case(event_log_t5, 'A18543', _cols),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 5.1b - Cases with a small number of repetitions
+
+    - **A10009 (2 payments, fully paid).** The offender pays 35, exactly the initial fine plus expenses (22 + 13), 10 days after the penalty was added. A month later follows 22, exactly the penalty. *Hypothesis:* The offender pays the sum named in the original notice without knowing about the penalty, and receives a reminder for the difference. This pattern is typical: in 71.7 % of the 3'736 cases of this variant the first payment equals initial amount plus expenses.
+    - **A10798 (2 payments, not fully paid).** The offender pays 22 within the 60 days after the notification, i.e. the fine without the expenses. On day 60 the penalty is added, and 10 days later the offender pays the missing 13. The outstanding amount stays at 22, exactly the penalty. *Hypothesis:* The offender pays the fine and the expenses separately and considers the matter closed. The penalty is added automatically on day 60, because the debt is not yet settled on that day. In 97.5 % of the 3'301 cases of this variant the two payments add up to initial amount plus expenses (± 1), and the time from notification to penalty is exactly 60 days in every case (Task 6.2).
+    - **A18543 (2 payments, overpaid by 13).** The offender pays the full 35 after 46 days, but the penalty is still added 14 days later, and four days later the offender pays another 35. *Hypothesis:* The penalty should not have been applied. It is triggered by the date, without taking the payment into account, or the payment was registered with a delay. The offender reacts to the resulting reminder and pays the same sum again, which leaves an overpayment.
+    """)
+    return
+
+
+@app.cell
+def _(ACTIVITY, event_log_t5, mo, payment_cases, show_case):
+    _cols = [ACTIVITY, 'amount', 'expense', 'paymentAmount', 'cum_payment_amount', 'outstanding_amount']
+
+    mo.vstack([
+        mo.md("The cases with 10 or more payments:"),
+        payment_cases.loc[
+            payment_cases['n_payments'] >= 10,
+            ['n_payments', 'initial_amount', 'total_paid', 'final_outstanding_amount', 'appeal', 'variant'],
+        ].sort_values('n_payments', ascending=False),
+        mo.md("**C20817:** 15 payments, the highest number in the log"),
+        show_case(event_log_t5, 'C20817', _cols),
+        mo.md("**C10852:** 10 payments"),
+        show_case(event_log_t5, 'C10852', _cols),
+        mo.md("**V18908:** 10 payments, then credit collection"),
+        show_case(event_log_t5, 'V18908', _cols),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 5.1b - Cases with a high number of repetitions
+
+    - **C20817 (15 payments).** After an initial fine of 779 the offender appeals to a judge, the penalty is added, and six months later 15 payments of 52 follow at roughly monthly intervals. They add up to 780, almost exactly the initial fine, and then stop. 779.50 stay outstanding, which is the penalty. *Hypothesis:* The offender cannot pay such a high fine at once and has an instalment plan based on the initial amount, possibly as a result of the appeal. In that case the penalty is not really owed, and our outstanding amount is too high. C13062, C18190 and C19108 show the same pattern.
+    - **C10852 (10 payments).** Here the fine (312.97) is doubled by the penalty, and an appeal to the prefecture follows. Then come 10 payments of exactly 62.59 at roughly monthly intervals, which add up to 625.90. *Hypothesis:* This is also an instalment plan, but one calculated on the amount including the penalty: one tenth each, up to a rounding difference of 0.05.
+    - **V18908 (10 payments, then credit collection).** The offender pays 10 instalments of 30, starting eight months after the penalty. Two and a half months after the last instalment the case goes to credit collection with only 25.50 outstanding. *Hypothesis:* The offender stops just before the end, perhaps assuming the debt is paid, and the case is handed over because of a date or a remaining balance, regardless of how much has already been paid.
+
+    **Reflection.** The repetitions have two different causes: (a) offenders splitting a payment, typically into two parts around the penalty, and (b) instalment plans for high fines, often after an appeal. In (a) the repetition is at least partly created by the process itself, because the penalty is added on a fixed day and offenders then pay a second time.
+    """)
+    return
+
+
+@app.cell
+def _(ACTIVITY, CASE_ID, TIMESTAMP, case_log_s3, event_log_t5, px):
+    # Calendar time in Italy without a time zone. Differences between these values are
+    # exact days, also across daylight saving changes (in UTC they would be off by an hour).
+    event_log_s5 = event_log_t5.copy()
+    event_log_s5['local_time'] = event_log_s5[TIMESTAMP].dt.tz_convert('Europe/Rome').dt.tz_localize(None)
+
+    _local_time = event_log_s5.groupby(CASE_ID)['local_time']
+    case_log_s5 = case_log_s3.copy()
+    case_log_s5['start'] = _local_time.first()
+    case_log_s5['end'] = _local_time.last()
+    case_log_s5['duration_days'] = (case_log_s5['end'] - case_log_s5['start']).dt.days
+    case_log_s5['last_activity'] = event_log_s5.groupby(CASE_ID)[ACTIVITY].last()
+
+
+    def first_time(activity):
+        # time of the first occurrence of an activity in each case
+        _events = event_log_s5[event_log_s5[ACTIVITY] == activity]
+        return _events.groupby(CASE_ID)['local_time'].first()
+
+
+    def delay_days(first, second):
+        # days between the first occurrences of two activities, for cases that have both
+        return (first_time(second) - first_time(first)).dropna().dt.days
+
+
+    def day_chart(days, title, max_days=None, log_y=False):
+        # one bar per day. Plotting counts instead of raw values keeps the notebook small.
+        _counts = days.value_counts().sort_index().rename('cases').rename_axis('days').reset_index()
+        if max_days is not None:
+            _counts = _counts[_counts['days'].between(0, max_days)]
+        _fig = px.bar(_counts, x='days', y='cases', log_y=log_y, title=title, width=800,
+                      labels={'days': 'Days', 'cases': 'Cases'})
+        _fig.update_traces(marker_line_width=0)
+        _fig.update_layout(bargap=0)
+        return _fig
+
+
+    def monthly_counts(times, name='cases'):
+        # number of timestamps per calendar month
+        return (times.dt.to_period('M').dt.to_timestamp().value_counts().sort_index()
+                .rename(name).rename_axis('month').reset_index())
+
+    return (
+        case_log_s5,
+        day_chart,
+        delay_days,
+        event_log_s5,
+        first_time,
+        monthly_counts,
+    )
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Task 5.2
+
+    ### Task 5.2a - Hypothesis
+
+    We expect arrivals to follow the work of the police. At the level of the year we expect the numbers to be fairly stable, but fewer cases at the end of the log, which stops in June 2013. Within the year we expect a dip in August (holidays) and within the week fewer new fines on weekends. We do not expect a pattern within the month.
+    """)
+    return
+
+
+@app.cell
+def _(case_log_s5, mo, monthly_counts, pd, px):
+    from visualizations import calendar_heatmap
+
+    _start = case_log_s5['start']
+
+    _monthly = px.bar(monthly_counts(_start), x='month', y='cases', width=800,
+                      title='Case arrivals per month', labels={'month': 'Month', 'cases': 'Arriving cases'})
+
+    # drift year by year: one row per year, one column per month
+    _by_year_month = pd.crosstab(_start.dt.year.rename('year'), _start.dt.month.rename('month'))
+    _heatmap = px.imshow(_by_year_month, color_continuous_scale='Blues', aspect='auto', width=800, height=500,
+                         title='Case arrivals by year and month',
+                         labels={'x': 'Month', 'y': 'Year', 'color': 'Arriving cases'})
+    _heatmap.update_yaxes(dtick=1)
+    _heatmap.update_xaxes(dtick=1)
+
+    _weekday_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+    _weekday = _start.dt.dayofweek.value_counts().reindex(range(7), fill_value=0)
+    _weekday_fig = px.bar(x=_weekday_names, y=_weekday.values, width=600, title='Case arrivals per weekday',
+                          labels={'x': 'Weekday', 'y': 'Arriving cases'})
+
+    _day = _start.dt.day.value_counts().sort_index()
+    _day_fig = px.bar(x=_day.index, y=_day.values, width=800, title='Case arrivals per day of the month',
+                      labels={'x': 'Day of the month', 'y': 'Arriving cases'})
+
+    # the calendar view of the lecture, for the year with the most arrivals
+    _busiest_year = int(_start.dt.year.value_counts().idxmax())
+    _calendar = calendar_heatmap(_start.dt.normalize().value_counts().sort_index().rename('cases'),
+                                 year=_busiest_year, value_format=',.0f',
+                                 title=f'Case arrivals per day in {_busiest_year}')
+
+    mo.vstack([
+        _monthly,
+        _heatmap,
+        mo.md("Arriving cases per year:"),
+        _by_year_month.sum(axis=1).rename('cases'),
+        _weekday_fig,
+        _day_fig,
+        _calendar,
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 5.2a - Result
+
+    Our hypothesis is only confirmed for the end of the log and for the day of the month. The pattern within the year and the week is the opposite of what we expected.
+
+    1. **Strong summer peak.** July (27'227 cases) and August (26'614) together make up 35.8 % of all arrivals, more than three times a month such as January (6'306). We expected a dip in August. *Interpretation:* The traffic in this area seems to be highest during the holidays, as in a tourist region.
+    2. **Weekends are the busiest days.** Saturday (25'092) and Sunday (25'627) are about a quarter above the weekdays (18'678 to 21'469). We expected the opposite. In the calendar of the year 2000 this is mainly a summer effect: Sundays have 111 to 212 new fines in July, but only 3 to 14 in January. *Interpretation:* This fits the summer peak. The date seems to be the date of the offence rather than of the office work.
+    3. **Drift from year to year.** The number of arrivals falls from 15'336 in 2000 to 8'565 in 2003, recovers to 15'114 in 2006, and then falls again to 4'018 in 2012 (2013 only runs until June). The summer peak remains in all years, but it is low in 2003 and 2012. January 2004 has only 90 cases. *Interpretation:* The log cannot explain these changes. Possible causes are changes in staff, in controls or in the data collection.
+    4. **Hardly any pattern within the month.** Days 1 to 30 have between 4'339 and 5'902 arrivals, and day 31 is lower simply because it exists in only seven months. The 15th is the highest (5'902). *Question:* Is this caused by the holiday on 15 August?
+
+    ### Task 5.2b - Hypothesis
+
+    A case counts as closed at its last recorded event. We expect closures to be less even than arrivals. Paid cases close soon after they arrive, so they should follow the arrival pattern. Cases that end with *Send for Credit Collection* should close in large batches, because handing over to an agency is an administrative step. Cases of the last years may look closed although they are still running, because the log stops in June 2013.
+    """)
+    return
+
+
+@app.cell
+def _(case_log_s5, mo, monthly_counts, pd, px):
+    _arrivals = monthly_counts(case_log_s5['start'], 'arrivals').set_index('month')
+    _closures = monthly_counts(case_log_s5['end'], 'closures').set_index('month')
+    _flow = pd.concat([_arrivals, _closures], axis=1).fillna(0).astype(int).sort_index()
+    # cases that have arrived but not yet reached their last recorded event
+    _flow['open cases'] = (_flow['arrivals'] - _flow['closures']).cumsum()
+
+    _compare = px.line(_flow.reset_index(), x='month', y=['arrivals', 'closures'], width=800,
+                       title='Case arrivals and closures per month',
+                       labels={'month': 'Month', 'value': 'Cases', 'variable': ''})
+    _open = px.line(_flow.reset_index(), x='month', y='open cases', width=800,
+                    title='Open cases at the end of each month',
+                    labels={'month': 'Month', 'open cases': 'Open cases'})
+
+    # closures per month, split by the activity that closes the case
+    _main_last = ['Payment', 'Send for Credit Collection', 'Send Fine']
+    _last = case_log_s5['last_activity'].where(case_log_s5['last_activity'].isin(_main_last), 'Other')
+    _month = case_log_s5['end'].dt.to_period('M').dt.to_timestamp().rename('month')
+    _by_last = pd.crosstab(_month, _last.rename('last activity')).stack().rename('cases').reset_index()
+    _split = px.bar(_by_last, x='month', y='cases', color='last activity', width=800,
+                    category_orders={'last activity': _main_last + ['Other']},
+                    title='Case closures per month, by last activity',
+                    labels={'month': 'Month', 'cases': 'Closing cases', 'last activity': 'Last activity'})
+
+    mo.vstack([
+        _compare,
+        _open,
+        _split,
+        mo.md("Last activity of the cases:"),
+        case_log_s5['last_activity'].value_counts().rename('cases'),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 5.2b - Result
+
+    The hypothesis is confirmed.
+
+    1. **Closures come in large batches.** The ten months with the most closures contain between 4'386 and 9'712 closures each. An ordinary month has far fewer. The chart by last activity shows that these peaks are almost entirely *Send for Credit Collection* (58'997 cases end with this activity).
+    2. **Paid cases follow the arrivals.** The 67'201 cases that end with *Payment* are spread evenly over time with no month above 1'251. This fits Task 5.3: most offenders pay within days.
+    3. **Open cases form a sawtooth.** They grow between the batches and drop at each one. The highest value is 17'599 in March 2002, directly before the largest batch, which brings it down sharply. *Interpretation:* The work in progress is not driven by the amount of work but by the rare decision to hand cases over. The value reaches 0 at the end only by definition, because each case counts as closed at its last event.
+    4. **Closed does not mean finished.** 20'755 cases end with *Send Fine* and 3'144 with *Send Appeal to Prefecture*. In June 2013, the last month of the log, 705 of the 842 closures are *Send Fine*. These cases are probably still running.
+
+    *Finding:* A real closing event and a status for each fine are needed to tell a finished case from one that is waiting. *Recommendation data collection:* Record them.
+
+    ### Task 5.2c - Hypothesis
+
+    We expect *Send for Credit Collection* to happen in a few large batches, probably once or a few times a year, because a list of unpaid fines is handed over to an agency. We expect *Send Appeal to Prefecture* to be much rarer and more regular, because each appeal has its own deadline. It could still be sent in smaller batches, for example once a week.
+    """)
+    return
+
+
+@app.cell
+def _(ACTIVITY, event_log_s5, mo, monthly_counts, pd, px):
+    _figures = []
+    _rows = []
+    for _activity in ['Send for Credit Collection', 'Send Appeal to Prefecture']:
+        _times = event_log_s5.loc[event_log_s5[ACTIVITY] == _activity, 'local_time']
+        _per_day = _times.dt.normalize().value_counts()
+        _rows.append({
+            'activity': _activity,
+            'events': len(_times),
+            'days with events': len(_per_day),
+            'median events per active day': _per_day.median(),
+            'max events on one day': _per_day.max(),
+            'share of events on the 10 busiest days %': round(100 * _per_day.head(10).sum() / len(_times), 1),
+            'first': _times.min().date(),
+            'last': _times.max().date(),
+        })
+        _figures.append(px.bar(monthly_counts(_times), x='month', y='cases', width=800,
+                               title=f'{_activity}: events per month',
+                               labels={'month': 'Month', 'cases': 'Events'}))
+
+    mo.vstack([pd.DataFrame(_rows).set_index('activity').T, *_figures])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 5.2c - Result
+
+    **Send for Credit Collection is extremely batched, but less often than we expected.** All 59'013 events fall on just **11 days**, with a median of 5'011 cases per day and up to 9'136. The ten largest days hold 99.6 % of the events. The hand-overs are 9 to 25 months apart, so usually less than once a year. *Interpretation:* The hand-over is a rare administrative decision and not a regular step of the process.
+
+    **Send Appeal to Prefecture is continuous, with one exception.** The 4'141 events are spread over 708 days, with a median of only 2 per active day, as we expected. But **520 events fall on one single day**, 25 December 2011, which also makes 2011 the busiest year (773 events). *Interpretation:* Normally each appeal is forwarded on its own. The exception looks like a catch-up or a data import, which Task 5.5 investigates.
+
+    ## Task 5.3
+
+    ### Task 5.3 - Hypothesis
+
+    We expect two very different distributions. Fully paid cases should be short, with many cases closed within days or weeks, because the most frequent variant is *Create Fine > Payment*. Cases sent to credit collection should take much longer, probably between one and three years, because they run through sending, notification, a penalty after 60 days and then a long wait.
+    """)
+    return
+
+
+@app.cell
+def _(case_log_s5, day_chart, mo, pd):
+    _groups = {
+        'sent to credit collection': case_log_s5.loc[case_log_s5['credit_collection'], 'duration_days'],
+        'fully paid': case_log_s5.loc[case_log_s5['paid'], 'duration_days'],
+    }
+    _summary = pd.DataFrame({
+        _name: _days.describe(percentiles=[0.1, 0.25, 0.5, 0.75, 0.9, 0.99]) for _name, _days in _groups.items()
+    }).round(1)
+    _summary.loc['share within 30 days %'] = [round(100 * (_d <= 30).mean(), 1) for _d in _groups.values()]
+    _summary.loc['share within 1 year %'] = [round(100 * (_d <= 365).mean(), 1) for _d in _groups.values()]
+
+    mo.vstack([
+        mo.md("Case duration in days:"),
+        _summary,
+        *[day_chart(_days, f'Case duration, {_name}') for _name, _days in _groups.items()],
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 5.3 - Result
+
+    | | Sent to credit collection | Fully paid |
+    |---|---|---|
+    | Cases | 59'013 | 60'287 |
+    | Median | 638 days | 6 days |
+    | Mean | 690.8 days | 93.7 days |
+    | 10 % to 90 % | 497 to 987 days | 1 to 407 days |
+    | Minimum to maximum | 273 to 3'437 days | 0 to 2'086 days |
+    | Within 30 days | 0.0 % | 70.3 % |
+    | Within 1 year | 0.2 % | 88.6 % |
+
+    The hypothesis is confirmed. The two distributions hardly overlap in their main part.
+
+    - **Sent to credit collection:** No case takes less than 273 days. The main hump lies around 570 days (about 1.6 years), with a second one around 960 days. Such humps fit the rare batches of Task 5.2c: the duration mainly depends on which batch a case ends up in. 70 % of these cases are closed within two years.
+    - **Fully paid:** More than half (55.3 %) of the cases are closed within 7 days, followed by a sharp drop: 2'872 cases on day 7 but only 1'385 on day 8. The rest forms a long, flat tail with small humps around 240 and 480 days. These are late payers who pay after the penalty. The difference between the mean (93.7) and the median (6) shows how skewed the distribution is.
+
+    *Question:* Why does the number of payments drop so sharply after 7 days? Is there a deadline or a reduced amount?
+
+    ## Task 5.4
+
+    ### Task 5.4 - Hypothesis
+
+    - *Create Fine > Send Fine*: a long and wide delay with a sharp drop at a legal deadline.
+    - *Send Fine > Insert Fine Notification*: short, about one to two weeks for the post.
+    - *Insert Fine Notification > Add penalty*: almost always exactly 60 days (Task 5.1).
+    - *Add penalty > Send for Credit Collection*: long and wide, with visible steps if the fines are handed over in batches (Task 5.2c).
+    """)
+    return
+
+
+@app.cell
+def _(day_chart, delay_days, mo, pd):
+    SUBPROCESS = ['Create Fine', 'Send Fine', 'Insert Fine Notification', 'Add penalty', 'Send for Credit Collection']
+
+    _rows = []
+    _figures = []
+    for _first, _second in zip(SUBPROCESS, SUBPROCESS[1:]):
+        _days = delay_days(_first, _second)
+        _top = _days.value_counts().head(3)
+        _rows.append({
+            'delay': f'{_first} > {_second}',
+            'cases': len(_days),
+            'negative': int((_days < 0).sum()),
+            'same day': int((_days == 0).sum()),
+            'median': _days.median(),
+            'mean': round(_days.mean(), 1),
+            '90th percentile': _days.quantile(0.9),
+            'max': _days.max(),
+            'most frequent delays (days: cases)': ', '.join(f'{int(_d)}: {num(_n)}' for _d, _n in _top.items()),
+        })
+        _figures.append(day_chart(_days[_days >= 0], f'{_first} > {_second}'))
+
+    mo.vstack([pd.DataFrame(_rows).set_index('delay'), *_figures])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 5.4a - Result
+
+    - **Create Fine > Send Fine** (103'987 cases, median 88 days): The distribution has two humps, around 50 and around 130 days, and it **breaks off abruptly at about 150 days**. 2'894 fines are sent on the day they are created.
+    - **Send Fine > Insert Fine Notification** (79'860 cases, median 15 days): The delay is short as we expected, 90 % within 30 days. It has several peaks (Task 5.4d) and single extreme cases of up to 432 days.
+    - **Insert Fine Notification > Add penalty** (79'860 cases): **All cases have exactly 60 days**, with no exception (Task 6.2). This delay does not vary at all, which no manual step would achieve. The penalty seems to be calculated by the system, not carried out by a person.
+    - **Add penalty > Send for Credit Collection** (59'013 cases, median 488 days): This is by far the longest delay, with a spread from 209 to 3'331 days. Instead of a smooth curve it has many narrow spikes, for example at 396 and 343 days, because many penalties from the same days meet the same batch.
+
+    ### Task 5.4b - Result
+
+    1. **Hand over to credit collection regularly, for example every month or quarter.** *Add penalty > Send for Credit Collection* is the largest delay (median 488 days), and it comes from waiting for rare batches (Task 5.5), not from any work. Regular hand-overs would shorten the cycle time by many months. Debts are probably also easier to collect while they are recent, and offenders would be treated more equally.
+    2. **Check the balance before adding the penalty.** The fixed 60 days show that the step is automatic. Penalties are also added when nothing or only a few euros are outstanding (Task 4.2a, Task 5.1). A check would avoid penalties that are not justified, as well as complaints and overpayments.
+    3. **Send fines earlier, with a fixed internal target.** The humps in *Create Fine > Send Fine* show that many letters go out shortly before the deadline, and 2'405 cases (2.3 %) lie behind 150 days. A target well below the deadline reduces the risk of losing a fine. It also shortens the time until the offender can pay.
+    4. **Offer electronic notification where possible.** *Send Fine > Insert Fine Notification* takes 15 days at the median, with a second peak of letters that apparently need longer (Task 5.4d). Electronic delivery would make this step faster and cheaper. The expenses for the offender would also fall.
+
+    ### Task 5.4c - Hypothesis
+
+    If there is a legal deadline for sending the letter, the distribution of *Create Fine > Send Fine* should end abruptly at that delay, because the police sends just in time and has to give up on a fine after that. Since most letters go within Italy, this drop should mark the deadline for Italy, while a small tail behind it belongs to letters sent abroad.
+    """)
+    return
+
+
+@app.cell
+def _(day_chart, delay_days, mo, pd):
+    _days = delay_days('Create Fine', 'Send Fine')
+
+    _thresholds = [30, 60, 90, 120, 150, 180, 240, 360, 720]
+    _cumulative = pd.DataFrame({
+        'cases sent within': [int((_days <= _t).sum()) for _t in _thresholds],
+        'share %': [round(100 * (_days <= _t).mean(), 2) for _t in _thresholds],
+    }, index=pd.Index(_thresholds, name='days'))
+
+    # cases per 10 days, to see where the distribution breaks off
+    _bins = (_days // 10 * 10).value_counts().sort_index().rename('cases').rename_axis('from day').to_frame()
+    _bins['change to the previous 10 days %'] = (100 * _bins['cases'].pct_change()).round(1)
+
+    mo.vstack([
+        day_chart(_days, 'Create Fine > Send Fine, first 400 days', max_days=400),
+        _cumulative,
+        mo.md("Cases per 10 days:"),
+        _bins[_bins.index <= 400],
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 5.4c - Result
+
+    **The distribution suggests a deadline of about 150 days.**
+
+    - The number of cases per 10 days stays at about 10'000 up to day 140 (9'998 for days 130 to 139), and then falls to 5'071 and to **370** from day 150 on. Per day it falls from 627 on day 145 to 77 on day 150 and to 30 on day 151, after which it stays at about this low level.
+    - **97.69 % of the letters are sent within 150 days.** So the rule is almost always kept, and the many letters shortly before the limit suggest that the police uses all of the time it has.
+    - The remaining 2'405 cases (2.31 %) form a thin, slowly falling tail, which fits letters abroad with a longer deadline. Only 36 cases are later than 360 days.
+
+    This fits the Italian road traffic law: article 201 prescribed 150 days until the law 120/2010 shortened the time to 90 days ([edotto](https://edotto.com/articolo/notifica-pi-breve-per-le-multe)). Task 5.7 shows the effect of this change.
+
+    ### Task 5.4d - Hypothesis
+
+    We expect several peaks in the transit time *Send Fine > Insert Fine Notification*. Case C20817 (Task 5.1) has both events on the same day as *Create Fine*, so we expect a peak at 0 days for fines handed over directly. Letters by post should form a second peak after about one to two weeks. There could be a later peak for letters that could not be delivered at the first attempt. `notificationType` may separate the groups, because it tells whether the fine refers to the owner or the driver.
+    """)
+    return
+
+
+@app.cell
+def _(ACTIVITY, CASE_ID, delay_days, event_log_s5, mo, px):
+    _days = delay_days('Send Fine', 'Insert Fine Notification')
+    _notification = event_log_s5[event_log_s5[ACTIVITY] == 'Insert Fine Notification'].groupby(CASE_ID)['notificationType'].first()
+
+    _table = _days.rename('days').to_frame().join(_notification)
+    _counts = _table[_table['days'].between(0, 60)].value_counts(['days', 'notificationType']).rename('cases').reset_index()
+
+    _fig = px.bar(_counts, x='days', y='cases', color='notificationType', width=800,
+                  title='Send Fine > Insert Fine Notification, first 60 days',
+                  labels={'days': 'Days', 'cases': 'Cases', 'notificationType': 'Notification type'})
+    _fig.update_traces(marker_line_width=0)
+    _fig.update_layout(bargap=0)
+
+    _top = _days.value_counts().head(15).rename('cases').rename_axis('days').to_frame()
+    _top['share %'] = (100 * _top['cases'] / len(_days)).round(2)
+
+    mo.vstack([
+        _fig,
+        mo.md(f"Cases: **{num(len(_days))}**, median **{_days.median():g}** days. The 15 most frequent transit times:"),
+        _top,
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 5.4d - Result
+
+    We see **three major peaks**. A much smaller shoulder at 25 to 26 days belongs to the tail of the third one.
+
+    1. **0 days (2'893 cases, 3.6 %).** The fine is sent and notified on the same day. Almost all of them have also been created on that day (Task 6.1c), so we interpret them as fines handed over directly, without the post. The three such cases that we inspected in Task 5.1 also have no postal expenses. This should be verified for all of them.
+    2. **About 7 days (6 to 8 days with 4'228 to 4'794 cases per day).** This is the main peak: letters delivered by post at the first attempt.
+    3. **About 18 days (17 to 19 days with 3'152 to 3'247 cases per day).** It lies about 10 to 11 days behind the second peak, with a clear dip in between (14 days: 2'162 cases). *Interpretation:* The offender was not reached at the first attempt, and the letter counts as delivered only after a fixed waiting period. The log cannot confirm this, so it remains a hypothesis.
+
+    Our expectation for `notificationType` is not confirmed. Only 134 of these cases have the type C, most of them at 0 days (132), but 2'761 of the cases at 0 days have the type P. So this attribute does not separate the peaks.
+
+    ## Task 5.5
+
+    ### Task 5.5 - Hypothesis
+
+    The performance spectrum shows every case as a line from one activity to the next. If *Send for Credit Collection* happens in batches, the lines from *Add penalty* should converge on a few points in time, with a large spread of waiting times per batch. For *Send Appeal to Prefecture* we expect shorter, more parallel lines from *Insert Date Appeal to Prefecture*, with smaller batches.
+    """)
+    return
+
+
+@app.cell
+def _(
+    ACTIVITY,
+    CASE_ID,
+    TIMESTAMP,
+    delay_days,
+    event_log_s5,
+    first_time,
+    mo,
+    pd,
+):
+    from event_enricher import event_add_relative_log_time
+    from visualizations import performance_spectrum
+
+    # the helpers need days since the start of the log in `rel_log_time`
+    _log = event_add_relative_log_time(event_log_s5[[CASE_ID, ACTIVITY, TIMESTAMP, 'local_time']].copy(), time_col='local_time')
+    _log['rel_log_time'] = _log['rel_log_time'].dt.days
+
+    _spectra = []
+    _batch_tables = []
+    for _source, _target in [('Add penalty', 'Send for Credit Collection'),
+                             ('Insert Date Appeal to Prefecture', 'Send Appeal to Prefecture')]:
+        _wait = delay_days(_source, _target)
+        # only cases with both activities, in an empty case log that the helper may extend
+        _cases = pd.DataFrame(index=_wait.index)
+        _spectrum = performance_spectrum(_cases, _log, _source, _target)
+        _spectrum.update_layout(title=f'Performance spectrum: {_source} > {_target}', width=900, height=450)
+        _spectra.append(_spectrum)
+
+        _dates = first_time(_target).reindex(_wait.index).dt.normalize().rename('date')
+        _batches = _wait.groupby(_dates).agg(['size', 'min', 'median', 'max']).rename(columns={
+            'size': 'cases', 'min': 'shortest wait', 'median': 'median wait', 'max': 'longest wait'})
+        _batch_tables.extend([
+            mo.md(f"""
+    **{_source} > {_target}**
+
+    - Cases: **{num(len(_wait))}**, on **{num(len(_batches))}** different days, median **{_batches['cases'].median():g}** cases per day
+    - Crossing lines in the spectrum above are FIFO violations.
+    - The 10 largest batches:
+    """),
+            _batches.sort_values('cases', ascending=False).head(10),
+        ])
+
+    mo.vstack([*_spectra, *_batch_tables])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 5.5 - Result
+
+    **Add penalty > Send for Credit Collection.** The spectrum confirms the batches and shows three new things.
+
+    - **A minimum age instead of a fixed period.** Each batch collects penalties of a wide range of dates. The shortest wait per batch is at least 209 days (for example 315 days on 10.04.2002 and 301 on 26.03.2012). So a case seems to need a minimum age of roughly 7 to 14 months before it can be included.
+    - **The process is not FIFO.** The longest wait in a batch is much longer than the time since the previous batch: 3'331 days on 26.03.2012, 1'806 days on 28.02.2006. These cases were skipped by several earlier batches. Their median wait also varies strongly, from 368 days (10.01.2003) to 713 days (26.03.2012).
+    - **The waiting time depends on when the fine happens to fall.** Two offenders with the same debt can wait years apart for the hand-over.
+    - **Dates that look administrative.** Batches fall on 25.12.2004, 28.02.2006 and 28.02.2007, and on the 10th of the month in 2002 to 2004. Christmas Day suggests a booking date in a system, not the day of real work.
+
+    **Insert Date Appeal to Prefecture > Send Appeal to Prefecture.** Normally there are small batches with a short wait: the largest regular days have 44 to 79 cases and a median wait of 35 to 56 days, with a range of 20 to 127 days. Our hypothesis holds for these.
+
+    The exception is **25.12.2011 with 520 cases, a median wait of 1'507.5 days and up to 4'272 days**, almost 12 years. On this day some appeals even have a wait of -48 days, so they are sent before their appeal date. Task 5.2c therefore has to be refined: 2011 is not a year with many appeals. Instead a backlog of old appeals seems to have been entered at once on a public holiday, probably in a clean-up of the data. *Recommendation data collection:* Distinguish the date of the real event from the date of its entry.
+
+    ## Task 5.6
+
+    ### Task 5.6 - Hypothesis
+
+    For a fixed article we expect the initial fine amount to be a step function of time: a few fixed amounts that are raised at the same date for all cases when the law changes. We expect the steps every few years, in line with inflation. Several parallel amounts per article could be caused by more specific offences under the same article.
+
+    Choose an article in the menu below. The example in the result is the preselected article, the most frequent one in the log.
+    """)
+    return
+
+
+@app.cell
+def _(case_log_s5, mo):
+    _article_counts = case_log_s5['article'].value_counts()
+    _options = {f'Article {_article:g} ({num(_n)} cases)': _article for _article, _n in _article_counts.items()}
+    article_select = mo.ui.dropdown(options=_options, value=next(iter(_options)), label='Article', searchable=True)
+    article_select
+    return (article_select,)
+
+
+@app.cell
+def _(article_select, case_log_s5, mo, px):
+    _cases = case_log_s5[case_log_s5['article'] == article_select.value]
+    _month = _cases['start'].dt.to_period('M').dt.to_timestamp().rename('month')
+
+    # one bubble per combination of month and amount
+    _bubbles = _cases.groupby([_month, 'initial_amount']).size().rename('cases').reset_index()
+    _fig = px.scatter(_bubbles, x='month', y='initial_amount', size='cases', size_max=25, width=850,
+                      title=f'Initial fine amount over time, article {article_select.value:g}',
+                      labels={'month': 'Month of Create Fine', 'initial_amount': 'Initial fine amount', 'cases': 'Cases'})
+
+    # when does each amount first and last occur?
+    _amounts = _cases.groupby('initial_amount')['start'].agg(['size', 'min', 'max']).rename(
+        columns={'size': 'cases', 'min': 'first', 'max': 'last'})
+    _amounts['first'] = _amounts['first'].dt.date
+    _amounts['last'] = _amounts['last'].dt.date
+
+    mo.vstack([
+        _fig,
+        mo.md("The 15 most frequent amounts of this article:"),
+        _amounts.sort_values('cases', ascending=False).head(15).sort_values('first'),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 5.6 - Result
+
+    **Article 157 (68'074 cases, stopping and parking).** The hypothesis is confirmed. At any time there is essentially one amount, and it changes in clear steps around 1 January:
+
+    | Period | Initial fine amount |
+    |---|---|
+    | 2000 | 31.30 |
+    | 2001 | 32.80 |
+    | 2002 | 32.00 |
+    | 2003 to 2004 | 33.60 |
+    | 2005 to 2006 | 35.00 |
+    | 2007 to 2008 | 36.00 |
+    | 2009 to 2010 | 38.00 |
+    | 2011 to 2012 | 39.00 |
+    | 2013 | 41.00 |
+
+    - From 2003 on, the amount rises **every two years by about 3 to 6 %**, in line with an adjustment for inflation.
+    - The only decrease is from 32.80 to 32.00 in 2002, the year in which the euro cash was introduced. *Question:* Is this a result of the conversion?
+    - The old amount is used for only a few days into the new year (for example 33.60 until 09.01.2005). This suggests that the date of the offence decides on the amount, and that some fines are entered with a short delay.
+    - Two single cases have about double the amount (65.60 in 2001 and 71.00 in 2005). They are probably errors or special cases.
+
+    *Finding:* Comparing amounts over the years, as in Task 2.5, should take this drift into account. An interactive menu is included above, so other articles can be studied in the same way.
+
+    ## Task 5.7
+
+    ### Task 5.7 - Hypothesis
+
+    If the sharp drop of Task 5.4c comes from a legal deadline that existed for the whole log, the distribution for cases that start after 1 September 2010 should keep the same shape. The date in the task suggests that something changes around then, so we expect a different distribution: possibly a shift of the peak or a different limit. Fines of the last months have had less time to be sent, but this should matter little, because the log runs for almost three more years.
+    """)
+    return
+
+
+@app.cell
+def _(case_log_s5, day_chart, delay_days, mo, pd):
+    _all = delay_days('Create Fine', 'Send Fine')
+    _recent = _all[_all.index.isin(case_log_s5.index[case_log_s5['start'] > pd.Timestamp('2010-09-01')])]
+
+    _groups = {'full log': _all, 'cases starting after 1 Sept 2010': _recent}
+    _summary = pd.DataFrame({
+        _name: _days.describe(percentiles=[0.1, 0.25, 0.5, 0.75, 0.9, 0.99]) for _name, _days in _groups.items()
+    }).round(1)
+    _summary.loc['most frequent delay'] = [_d.value_counts().idxmax() for _d in _groups.values()]
+
+    mo.vstack([
+        _summary,
+        day_chart(_recent, 'Create Fine > Send Fine, cases starting after 1 Sept 2010, first 400 days', max_days=400),
+        day_chart(_all, 'Create Fine > Send Fine, full log, first 400 days', max_days=400),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 5.7 - Result
+
+    | Create Fine > Send Fine | Full log | Starting after 1 Sept 2010 |
+    |---|---|---|
+    | Cases | 103'987 | 10'721 |
+    | Median | 88 days | 50 days |
+    | Mean | 87.5 days | 54.8 days |
+    | 75th percentile | 121 days | 59 days |
+    | 90th percentile | 136 days | 90 days |
+    | Within 60 days | 31.6 % | 76.7 % |
+    | Within 90 days | 52.1 % | 90.3 % |
+
+    **The distribution changes clearly.** The second hump around 130 days has disappeared, and there is only one peak around 48 to 54 days. The hard limit at 150 days has been replaced by a clear drop at about 60 days: from 267 cases on day 59 to 170 on day 60, to 115 on day 61.
+
+    **Interpretation.** This fits the change of article 201 by the law 120/2010, which shortened the deadline from 150 to 90 days ([edotto](https://edotto.com/articolo/notifica-pi-breve-per-le-multe)). So the 150 days of Task 5.4c only apply to the time before this change, and the full log mixes two regimes. The drop at 60 days instead of 90 makes sense if the notification must arrive within the deadline: 60 days for sending plus up to 30 days of transit (the 90th percentile of Task 5.4) gives 90 days. This shows why concept drift matters: a single distribution for the full log would hide the change.
+
+    About 10 % of the cases are still later than 90 days. These could be letters abroad or cases whose owner had to be identified first. The source does not tell us the exact date from which the new rule applied, so the date of 1 September comes from the task.
+    """)
+    return
+
+
+@app.cell
+def _(ACTIVITY, case_log_s5, mo):
+    def has_activity(activity):
+        # does the case contain the activity at least once?
+        return case_log_s5['seq_variant'].apply(lambda variant: activity in variant)
+
+
+    def rule_report(applicable, violating):
+        # the numbers that Task 6.1 asks for; both arguments are numbers of cases
+        _kept = applicable - violating
+        return mo.md(f"""
+    - Cases to which the constraint applies: **{num(applicable)}** of {num(len(case_log_s5))}
+    - **Violating cases: {num(violating)}** ({violating / applicable:.2%} of the applicable cases)
+    - Precision of "if ... then ...": **{_kept / applicable:.4f}**
+    """)
+
+
+    RULE_COLUMNS = [ACTIVITY, 'amount', 'expense', 'paymentAmount', 'dismissal', 'notificationType', 'outstanding_amount']
+    return RULE_COLUMNS, has_activity, rule_report
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # Session 6
+
+    ## Task 6.1
+
+    ### Task 6.1a - Hypothesis
+
+    *Whenever a case has Insert Fine Notification then also Add penalty is present.* Task 4.2a already showed that both activities occur in the same 79'860 cases, so we expect **no violation**. This is surprising from a business point of view, because an offender who pays in time should not get a penalty.
+    """)
+    return
+
+
+@app.cell
+def _(RULE_COLUMNS, event_log_s5, has_activity, mo, rule_report, show_case):
+    _notified = has_activity('Insert Fine Notification')
+    _violating = _notified & ~has_activity('Add penalty')
+    _violating_ids = _violating[_violating].index
+
+    mo.vstack([
+        rule_report(int(_notified.sum()), int(_violating.sum())),
+        mo.md(f"**Violating case {_violating_ids[0]}**") if len(_violating_ids) else mo.md("There is no violating case."),
+        show_case(event_log_s5, _violating_ids[0], RULE_COLUMNS) if len(_violating_ids) else mo.md(""),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 6.1a - Result
+
+    **0 of the 79'860 applicable cases violate the constraint**, so it is valid, as expected. There is therefore no violating case to inspect.
+
+    **Reflection.** The perfect result is itself suspicious. From a business point of view a fine that is notified and then paid in time should not get a penalty. Yet in this log such a fine does not exist. Together with Task 6.2 this suggests that *Insert Fine Notification* is not recorded when the letter arrives, but only when a fine is still unpaid at the end of the 60 days, together with the penalty. An offender who pays in time would then have no notification in the log at all, as in the variant *Create Fine > Send Fine > Payment*. *Recommendation data collection:* Record each notification when it happens.
+
+    ### Task 6.1b - Hypothesis
+
+    *Send Appeal to Prefecture is always eventually followed by Receive Result Appeal from Prefecture.* The table in Task 5.1 shows 4'141 cases with *Send Appeal to Prefecture* but only 999 with *Receive Result Appeal from Prefecture*, so we expect **at least about 3'100 violations**, roughly three quarters of the appeals. Part of them could be appeals still running at the end of the log, but most should be results that were not recorded.
+    """)
+    return
+
+
+@app.cell
+def _(
+    RULE_COLUMNS,
+    case_log_s5,
+    event_log_s5,
+    first_time,
+    has_activity,
+    mo,
+    pd,
+    rule_report,
+    show_case,
+):
+    _send, _receive = 'Send Appeal to Prefecture', 'Receive Result Appeal from Prefecture'
+
+
+    def _violates(variant):
+        _positions = [_i for _i, _a in enumerate(variant) if _a == _send]
+        return any(_receive not in variant[_i + 1:] for _i in _positions)
+
+
+    _applicable = has_activity(_send)
+    _violating = case_log_s5.loc[_applicable, 'seq_variant'].apply(_violates)
+    _violating_ids = _violating[_violating].index
+
+    _sent_year = first_time(_send).dt.year.rename('year of Send Appeal')
+    _by_year = pd.DataFrame({
+        'appeals': _sent_year.value_counts(),
+        'violating': _sent_year[_sent_year.index.isin(_violating_ids)].value_counts(),
+    }).fillna(0).astype(int).sort_index()
+
+    # what happens to a violating case after the appeal was sent?
+    _last_activity = case_log_s5.loc[_violating_ids, 'last_activity'].value_counts().rename('cases')
+
+    mo.vstack([
+        rule_report(int(_applicable.sum()), int(_violating.sum())),
+        mo.md("Appeals and violations by year:"),
+        _by_year,
+        mo.md("Last activity of the violating cases:"),
+        _last_activity,
+        mo.md(f"**Violating case {_violating_ids[0]}**") if len(_violating_ids) else mo.md("There is no violating case."),
+        show_case(event_log_s5, _violating_ids[0], RULE_COLUMNS) if len(_violating_ids) else mo.md(""),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 6.1b - Result
+
+    **3'224 of the 4'141 applicable cases violate the constraint (77.86 %).** The number matches our hypothesis.
+
+    **Reflection.** Our explanation of appeals that are still running is not sufficient: the violations are not concentrated at the end of the log, but occur in all years (for example 90 of 145 in 2000 and 380 of 480 in 2007). In 3'144 of the violating cases *Send Appeal to Prefecture* is the very last event. So in most cases the process leaves the log at this point, and it is unclear whether the prefecture ever answered.
+
+    **Case A10001.** The fine of 36 is notified on 25.07.2007, and the appeal is entered on 02.08.2007. The penalty is added on 23.09.2007, and the appeal is sent on 24.09.2007. On this last event `dismissal` changes to **#**, which means dismissed by the prefecture, although no result was received. *Interpretation:* The result seems to be stored as the code on the sending event, instead of as a separate event. This cannot explain all of the violations, since Task 3.1 found only 2'073 dismissed cases in the whole log.
+
+    *Questions:* How many of the violating cases have this code? What happened to the others? *Recommendation data collection:* Always record the result of an appeal as an event with its date.
+
+    ### Task 6.1c - Hypothesis
+
+    *If Send Fine is on the same day as Create Fine, so is Insert Fine Notification.* In the few cases we have seen with this pattern (C20817, C17607, C19089 in Task 5.1) all three events fall on one day, which suggests a fine that is handed over directly. So we expect the constraint to hold with **very few violations**.
+    """)
+    return
+
+
+@app.cell
+def _(
+    RULE_COLUMNS,
+    case_log_s5,
+    event_log_s5,
+    first_time,
+    mo,
+    rule_report,
+    show_case,
+):
+    _created = first_time('Create Fine').dt.normalize()
+    _sent = first_time('Send Fine').dt.normalize().reindex(case_log_s5.index)
+    _notified = first_time('Insert Fine Notification').dt.normalize().reindex(case_log_s5.index)
+
+    _applicable = _sent == _created.reindex(case_log_s5.index)
+    # a missing notification counts as a violation: it is not on the same day
+    _violating = _applicable & (_notified != _created.reindex(case_log_s5.index))
+    _violating_ids = _violating[_violating].index
+
+    mo.vstack([
+        rule_report(int(_applicable.sum()), int(_violating.sum())),
+        mo.md(f"""
+    - Violating cases without any *Insert Fine Notification*: **{num(_notified[_violating].isna().sum())}**
+    - Violating cases with a notification on a later day: **{num(_notified[_violating].notna().sum())}**
+    """),
+        mo.md(f"**Violating case {_violating_ids[0]}**") if len(_violating_ids) else mo.md("There is no violating case."),
+        show_case(event_log_s5, _violating_ids[0], RULE_COLUMNS) if len(_violating_ids) else mo.md(""),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 6.1c - Result
+
+    **167 of the 2'894 applicable cases violate the constraint (5.77 %).** 118 of them have no notification at all, and 49 have one on a later day. The hypothesis of very few violations holds only approximately. The rule has a precision of 0.94, so it is a strong pattern but not a rule of the process.
+
+    **Case C10130.** The fine of 131.20 is created and sent on 07.08.2001, and expenses of 6.71 are charged. The notification follows only on 15.09.2001, 39 days later. The fine is not paid, and the case goes on to a penalty and to credit collection. *Interpretation:* Unlike the cases in Task 5.4d, this is apparently a real letter by post, because there are postal expenses. It only happens to have been sent on the day the fine was created. So a *Send Fine* on the first day has two meanings, and the log can only separate them by its other attributes.
+
+    ### Task 6.1d - Hypothesis
+
+    *If the outstanding amount after an event is 0 or less, then there is no further event.* We expect **some hundreds of violations**: Task 4.2b showed 362 cases of *Create Fine > Payment > Send Fine*, in which the fine is sent after it was paid, and Task 5.1 showed payments after a fine was settled, for example A18543. Most of the following events should therefore be *Send Fine* or *Add penalty*.
+    """)
+    return
+
+
+@app.cell
+def _(
+    ACTIVITY,
+    CASE_ID,
+    RULE_COLUMNS,
+    event_log_s5,
+    mo,
+    pd,
+    rule_report,
+    show_case,
+):
+    _log = event_log_s5[[CASE_ID, ACTIVITY, 'outstanding_amount', 'local_time']].copy()
+    _next = _log.groupby(CASE_ID)
+    _log['next_activity'] = _next[ACTIVITY].shift(-1)
+    _log['next_time'] = _next['local_time'].shift(-1)
+
+    _settled = _log[_log['outstanding_amount'] <= 0]
+    _violating_events = _settled[_settled['next_activity'].notna()]
+    _violating_ids = _violating_events[CASE_ID].unique()
+
+    # the most frequent kind of violation is the most useful one to inspect
+    _pair = _violating_events.groupby([ACTIVITY, 'next_activity']).size().idxmax()
+    _example = _violating_events[(_violating_events[ACTIVITY] == _pair[0]) & (_violating_events['next_activity'] == _pair[1])][CASE_ID].iloc[0]
+
+    mo.vstack([
+        rule_report(int(_settled[CASE_ID].nunique()), len(_violating_ids)),
+        mo.md(f"""
+    - Violating events: **{num(len(_violating_events))}**
+    - Of which the next event is on the same day, so the order is unknown (Task 2.1): **{num((_violating_events['next_time'] == _violating_events['local_time']).sum())}**
+    """),
+        mo.md("Violating events, by the activity (rows) and the activity that follows it (columns):"),
+        pd.crosstab(_violating_events[ACTIVITY], _violating_events['next_activity']),
+        mo.md(f"**Violating case {_example}**, of the most frequent kind (*{_pair[0]}* followed by *{_pair[1]}*)"),
+        show_case(event_log_s5, _example, RULE_COLUMNS),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 6.1d - Result
+
+    **728 of the 60'783 applicable cases violate the constraint (1.20 %)**, with 774 violating events. The applicable cases are those that reach an outstanding amount of 0 or less at some event. The order of the events is unknown for 33 of them, because they are on the same day. The hypothesis of some hundreds of violations is confirmed.
+
+    **Which events follow?** Mostly *Send Fine* after a payment (540 events), as expected from Task 4.2b, then a further *Payment* (117), which leads to an overpayment, and *Add penalty* after a payment (36). We expected more penalties here. There are also 31 cases of *Create Fine > Send Fine* in which the amount is already 0 or less when the fine is created.
+
+    **Case A1161.** The fine of 35 is created on 15.08.2006 and paid in full on 12.12.2006. Two days later, on 14.12.2006, it is sent anyway, which adds expenses of 11. The offender pays these on 30.12.2006, and then nothing more is outstanding. *Interpretation:* The letter was probably already prepared when the payment arrived, or the payment was only registered later. Either way the offender pays expenses for a letter that should not have been necessary. This is the same improvement as in Task 4.2c: check for payments immediately before sending.
+
+    **Reflection.** With a precision of 0.988 the rule is nearly valid. It is therefore useful as a monitoring rule for detecting unnecessary work.
+
+    ### Task 6.1e - Hypothesis
+
+    *Credit collection happens not earlier than 180 and not later than 730 days after Insert Fine Notification.* The penalty comes after 60 days, so collection before 180 days would be unusual, and we expect a legal limit of about two years at the upper end. We expect the rule to hold for **most cases, with a small number of late violations**, because the fines are handed over in batches (Task 5.2c).
+    """)
+    return
+
+
+@app.cell
+def _(
+    RULE_COLUMNS,
+    day_chart,
+    delay_days,
+    event_log_s5,
+    has_activity,
+    mo,
+    rule_report,
+    show_case,
+):
+    _days = delay_days('Insert Fine Notification', 'Send for Credit Collection')
+    _early, _late = _days[_days < 180], _days[_days > 730]
+    _without_notification = has_activity('Send for Credit Collection') & ~has_activity('Insert Fine Notification')
+
+    _examples = []
+    if len(_early):
+        _examples += [mo.md(f"**Earliest case {_early.idxmin()}** ({_early.min():g} days)"),
+                      show_case(event_log_s5, _early.idxmin(), RULE_COLUMNS)]
+    if len(_late):
+        _examples += [mo.md(f"**Latest case {_late.idxmax()}** ({_late.max():g} days)"),
+                      show_case(event_log_s5, _late.idxmax(), RULE_COLUMNS)]
+
+    mo.vstack([
+        rule_report(len(_days), len(_early) + len(_late)),
+        mo.md(f"""
+    - Earlier than 180 days: **{num(len(_early))}**, later than 730 days: **{num(len(_late))}**
+    - Median **{_days.median():g}** days, minimum {_days.min():g}, maximum {_days.max():g}
+    - Cases with credit collection but without a notification, which we leave out: **{num(_without_notification.sum())}**
+    """),
+        day_chart(_days, 'Insert Fine Notification > Send for Credit Collection'),
+        *_examples,
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 6.1e - Result
+
+    **11'258 of the 59'013 applicable cases violate the constraint (19.08 %).** All of them are too late, none is too early. Every case with credit collection also has a notification. Our hypothesis of a small number of violations is refuted. The rule is clearly not kept in practice, even though the median of 548 days lies well inside the limits.
+
+    - **Lower limit (180 days):** It is always kept. The shortest delay is 269 days. So the limit could be reached far earlier in principle, but this is never used.
+    - **Upper limit (730 days):** About one in five cases is late, with a maximum of 3'391 days.
+
+    **Case N40905 (the latest one).** A fine of 19 is created on 28.10.2002, notified on 13.12.2002 and raised by the penalty on 11.02.2003. It is then handed over only on 26.03.2012, more than **nine years** after the notification and for only 49. *Interpretation:* The case was skipped by many batches (Task 5.5). If the constraint is a legal limit, such a claim could no longer be enforceable, and the cost of collecting it could easily exceed its value.
+
+    **Reflection.** The late cases are a direct result of the rare and non-FIFO batches. More regular hand-overs (Task 5.4b), combined with a check of the oldest cases first, would remove most of these violations.
+
+    ## Task 6.2
+
+    ### Task 6.2 - Constraint and hypothesis
+
+    **Constraint:** *Add penalty happens exactly 60 days after Insert Fine Notification.*
+
+    We expect this to be satisfied in almost all cases, because the delays in Task 5.1 are 60 days at the median and at both quartiles. It would show that the penalty is added automatically on a fixed date, which matters for the penalties on nearly paid fines in Task 5.1. We expect exceptions at most where appeals interrupt the process.
+    """)
+    return
+
+
+@app.cell
+def _(
+    RULE_COLUMNS,
+    case_log_s5,
+    delay_days,
+    event_log_s5,
+    mo,
+    rule_report,
+    show_case,
+):
+    _days = delay_days('Insert Fine Notification', 'Add penalty')
+    _other = _days[_days != 60]
+
+    _top = _days.value_counts().head(10).rename('cases').rename_axis('days').to_frame()
+    _top['share %'] = (100 * _top['cases'] / len(_days)).round(2)
+
+    # are the exceptions cases with an appeal?
+    _appeal_activities = ['Appeal to Judge', 'Insert Date Appeal to Prefecture']
+    _exception_has_appeal = case_log_s5.loc[_other.index, 'seq_variant'].apply(
+        lambda variant: any(_a in variant for _a in _appeal_activities))
+
+    mo.vstack([
+        rule_report(len(_days), len(_other)),
+        mo.md(f"""
+    - Exceptions that contain an appeal: **{num(_exception_has_appeal.sum())}** of {num(len(_other))}
+    - Delay between the two activities, shortest and longest: **{_days.min():g}** and **{_days.max():g}** days
+    """),
+        mo.md("The 10 most frequent delays:"),
+        _top,
+        mo.md(f"**Exception {_other.index[0]}**") if len(_other) else mo.md("There is no exception."),
+        show_case(event_log_s5, _other.index[0], RULE_COLUMNS) if len(_other) else mo.md(""),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 6.2 - Result
+
+    **0 of the 79'860 applicable cases violate the constraint.** All of them have exactly 60 days between the two activities, even more than we expected. There are no exceptions for appeals either.
+
+    **Reflection.** In real work, a delay of exactly the same length in every case, including weekends and holidays, is not plausible. At least one of the two dates must therefore be calculated by the system, not observed: the penalty is set for day 60, or one of the two events is entered afterwards. Together with Task 6.1a this has three consequences:
+
+    - It supports our hypothesis in Task 5.1 that the penalty is added automatically on a fixed date, so that it also hits offenders who have paid almost everything or who pay right around this time.
+    - This delay should not be counted as waiting time that can be improved, because it results from the rule itself.
+    - *Insert Fine Notification* may not reliably show the actual delivery date. The transit times in Task 5.4d should therefore be read with care.
+
+    *Recommendation data collection:* Record the real time of the delivery and the rule that triggered the penalty.
+
+    ## Task 6.3
+
+    ### Task 6.3 - Approach and hypothesis
+
+    We convert our BPMN model from Task 4.3 into a Petri net and align each of the 48 variants of the fine object sub-log with it. An alignment shows which steps of a variant the model cannot follow. Black transitions of the Petri net appear as `None` and are ignored.
+
+    From Task 4.3 we expect about 31 of the 48 variants not to fit. We expect some of them to be behaviour that the model should allow. Our candidate is a fine that is partly paid and then sent to credit collection: *Create Fine > Send Fine > Insert Fine Notification > Add penalty > Payment > Send for Credit Collection*. Our model lets a payment only end the case or lead to a further payment, but handing over a remaining debt makes business sense.
+    """)
+    return
+
+
+@app.cell
+def _(fine_object_variant, mo, pd, pm4py):
+    import warnings as _warnings
+    from pm4py.objects.log.obj import Event as _Event, EventLog as _EventLog, Trace as _Trace
+
+    _counts = fine_object_variant.value_counts()
+    _rows = []
+    with _warnings.catch_warnings():
+        _warnings.simplefilter('ignore')  # pm4py marks some of these helper functions as deprecated
+        _net, _initial, _final = pm4py.convert_to_petri_net(pm4py.read_bpmn(str(mo.notebook_dir() / 'fine_object.bpmn')))
+        for _variant, _n in _counts.items():
+            _log = _EventLog([_Trace([_Event({'concept:name': _a}) for _a in _variant])])
+            _result = pm4py.conformance_diagnostics_alignments(_log, _net, _initial, _final)[0]
+            # (>>, None) is a silent step of the model and no deviation
+            _moves = [_move for _move in _result['alignment'] if _move[0] != _move[1] and _move[1] is not None]
+            _rows.append({
+                'variant': _variant,
+                'cases': _n,
+                'fitness': round(_result['fitness'], 3),
+                'only in the log': ', '.join(_m[0] for _m in _moves if _m[1] == '>>'),
+                'only in the model': ', '.join(_m[1] for _m in _moves if _m[0] == '>>'),
+            })
+
+    conformance_table = pd.DataFrame(_rows)
+    _not_fitting = conformance_table[conformance_table['fitness'] < 1]
+    _shown = _not_fitting.assign(variant=_not_fitting['variant'].apply(' > '.join)).reset_index(drop=True)
+
+    mo.vstack([
+        mo.md(f"""
+    - Variants that fit the model: **{(conformance_table['fitness'] == 1).sum()}** of {len(conformance_table)}
+    - Cases that fit the model: **{num(conformance_table.loc[conformance_table['fitness'] == 1, 'cases'].sum())}** of {num(conformance_table['cases'].sum())}. This should agree with Task 4.3.
+    """),
+        mo.md("All variants that are not a trace of the model, with the deviating steps:"),
+        _shown,
+    ])
+    return (conformance_table,)
+
+
+@app.cell
+def _(
+    ACTIVITY,
+    RULE_COLUMNS,
+    conformance_table,
+    event_log_s5,
+    fine_object_variant,
+    mo,
+    show_case,
+):
+    REPORTED_VARIANT = ('Create Fine', 'Send Fine', 'Insert Fine Notification', 'Add penalty',
+                        'Payment', 'Send for Credit Collection')
+
+    _row = conformance_table[conformance_table['variant'].apply(lambda variant: variant == REPORTED_VARIANT)]
+    _cases = fine_object_variant[fine_object_variant.apply(lambda variant: variant == REPORTED_VARIANT)].index
+    _events = event_log_s5[event_log_s5['case:concept:name'].isin(_cases)]
+    _at_collection = _events[_events[ACTIVITY] == 'Send for Credit Collection']['outstanding_amount']
+
+    mo.vstack([
+        mo.md(f"""
+    **{' > '.join(REPORTED_VARIANT)}**
+
+    - Cases: **{num(len(_cases))}**, fitness on the model: **{_row['fitness'].iloc[0] if len(_row) else 'variant not found'}**
+    - Only in the log: **{_row['only in the log'].iloc[0] if len(_row) else ''}**, only in the model: **{_row['only in the model'].iloc[0] if len(_row) else ''}**
+    - Cases with something still outstanding at *Send for Credit Collection*: **{num((_at_collection > 0).sum())}** of {num(len(_at_collection))}
+    - Outstanding amount at that point: median **{_at_collection.median():g}**, minimum {_at_collection.min():g}, maximum {_at_collection.max():g}
+    """),
+        mo.md(f"**Case {_cases[0]}**") if len(_cases) else mo.md("There is no case of this variant."),
+        show_case(event_log_s5, _cases[0], RULE_COLUMNS) if len(_cases) else mo.md(""),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 6.3a - Result
+
+    *Create Fine > Send Fine > Insert Fine Notification > Add penalty > Payment > Send for Credit Collection*
+
+    This variant occurs in **1'523 cases** and is not a trace of the BPMN model. Its fitness is 0.875, and the alignment shows *Payment* as the step that only occurs in the log. The model confirms the numbers of Task 4.3: 17 of the 48 variants and 120'535 of the 150'370 cases fit.
+
+    ### Task 6.3b - Result
+
+    **We consider this behaviour expected.** In 1'521 of the 1'523 cases something is still outstanding at credit collection, with a median of 38. In case A1017, for example, the offender pays 32 (the fine of 21 and the expenses of 11) after the penalty was added, and the remaining 21.50 is handed over two years later. The offender pays only part of the fine with its penalty, and the police hands the remaining debt over to the collection agency. The model is wrong here, because it treats every payment as if it ended the case or led to another payment.
+
+    **Update of the BPMN model.** Add a third outgoing flow to the XOR gateway G5 behind *Payment*, leading to *Send for Credit Collection*. The model stays sound, because this is only one more branch of an XOR split and the graph still has no AND gateway. The update allows more than intended: *Create Fine > Payment > Send for Credit Collection* would also fit, although a fine is normally only handed over after the penalty. To exclude this, the model would need a separate *Payment* task behind *Add penalty*, which leads to either credit collection or the end of the process.
+    """)
+    return
+
+
 if __name__ == "__main__":
     app.run()

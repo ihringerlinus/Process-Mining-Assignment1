@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.16"
+__generated_with = "0.25.1"
 app = marimo.App(width="medium")
 
 
@@ -324,10 +324,10 @@ def _(TARGET, VARIANT, normalized_case_log):
     filtered_case_log = normalized_case_log
     # Example baseline: drop the cases that stop after Send Fine (no notification),
     # those dismissed by a judge or the prefecture, and the fully paid ones.
-    # filtered_case_log = filtered_case_log[
-    #     filtered_case_log[VARIANT] != "['Create Fine', 'Send Fine']"]
-    # filtered_case_log = filtered_case_log[filtered_case_log['dismissed'] == 'False']
-    # filtered_case_log = filtered_case_log[filtered_case_log['paid'] == 'False']
+    filtered_case_log = filtered_case_log[
+        filtered_case_log[VARIANT] != "['Create Fine', 'Send Fine']"]
+    filtered_case_log = filtered_case_log[filtered_case_log['dismissed'] == 'False']
+    filtered_case_log = filtered_case_log[filtered_case_log['paid'] == 'False']
     print(len(filtered_case_log), 'cases out of', len(normalized_case_log), 'remain')
 
     outcome = filtered_case_log.apply(TARGET, axis=1)
@@ -371,10 +371,67 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Our analysis for Task 7.3
+
+    The cell below reproduces the steps of our interactive session, so that the
+    rules are still stored after a restart and appear in the html export:
+
+    1. **Baseline (2.2):** we removed the cases of the variant *Create Fine*,
+       *Send Fine* (assumed to be dismissed by the police), the cases dismissed by
+       a judge or the prefecture, and the fully paid ones. 67'635 cases remain,
+       8'625 of them are not sent for credit collection.
+    2. **Hiding (3.2):** we hid `collected`, `Send_for_Credit_Collection::count`
+       and the variant `all_events.concept:name::append`, because they contain
+       the outcome. In a second round we also hid `duration`, `end_time` and
+       `no_of_events`: they are measured over the whole case, including a later
+       *Send for Credit Collection*, so a short case or a case with few events is
+       almost by definition not collected.
+    3. **Rule induction (3.3):** among the suggested rules we stored three that
+       are meaningful from a business point of view. The third one was suggested
+       as "at least two payments and *Create Fine* before about September 2003".
+       We found no business reason for the date limit and dropped it; the rule
+       "at least two payments" alone keeps a precision above 0.99.
+    """)
+    return
+
+
+@app.cell
 def _(filtered_case_log, outcome):
     from interox import InterOX
+    from rulelearn_ri.trxf.core.conjunction import Conjunction
+    from rulelearn_ri.trxf.core.feature import Feature
+    from rulelearn_ri.trxf.core.predicate import Predicate, Relation
 
-    iox = InterOX(outcome, filtered_case_log)
+    # step 2: features hidden from rule induction
+    _hidden = [
+        'collected', 'Send_for_Credit_Collection::count', 'all_events.concept:name::append',
+        'duration', 'end_time', 'no_of_events',
+    ]
+    iox = InterOX(outcome, filtered_case_log, hidden_feats=_hidden)
+
+    # step 3: the three rules we stored from the suggestions
+    iox.store_rule_raw(
+        Conjunction([
+            Predicate(Feature('Insert_Date_Appeal_to_Prefecture::count'), Relation.GE, 1.0),
+            Predicate(Feature('Notify_Result_Appeal_to_Offender::count'), Relation.LE, 0.0),
+        ]),
+        'Open appeal: the offender appealed to the prefecture and has not been notified of a '
+        'result yet. Collection is suspended while the appeal is pending.')
+    iox.store_rule_raw(
+        Conjunction([
+            Predicate(Feature('Insert_Fine_Notification::count'), Relation.LE, 0.0),
+        ]),
+        'Never notified: the case has no Insert Fine Notification, so no penalty is added and '
+        'the fine cannot be sent for credit collection.')
+    iox.store_rule_raw(
+        Conjunction([
+            Predicate(Feature('Payment::count'), Relation.GE, 2.0),
+        ]),
+        'Paid in two steps: the offender paid fine and expenses in two payments, typically '
+        'one before and one after the penalty, so that only the penalty is left. Such a rest '
+        'is not sent for credit collection.')
     return (iox,)
 
 

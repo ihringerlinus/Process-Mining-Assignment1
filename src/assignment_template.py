@@ -2141,7 +2141,7 @@ def _(mo):
     1. **Strong summer peak.** July (27'227 cases) and August (26'614) together make up 35.8 % of all arrivals, more than three times a month such as January (6'306). We expected a dip in August. *Interpretation:* The traffic in this area seems to be highest during the holidays, as in a tourist region.
     2. **Weekends are the busiest days.** Saturday (25'092) and Sunday (25'627) are about a quarter above the weekdays (18'678 to 21'469). We expected the opposite. In the calendar of the year 2000 this is mainly a summer effect: Sundays have 111 to 212 new fines in July, but only 3 to 14 in January. *Interpretation:* This fits the summer peak. The date seems to be the date of the offence rather than of the office work.
     3. **Drift from year to year.** The number of arrivals falls from 15'336 in 2000 to 8'565 in 2003, recovers to 15'114 in 2006, and then falls again to 4'018 in 2012 (2013 only runs until June). The summer peak remains in all years, but it is low in 2003 and 2012. January 2004 has only 90 cases. *Interpretation:* The log cannot explain these changes. Possible causes are changes in staff, in controls or in the data collection.
-    4. **Hardly any pattern within the month.** Days 1 to 30 have between 4'339 and 5'902 arrivals, and day 31 is lower simply because it exists in only seven months. The 15th is the highest (5'902). *Question:* Is this caused by the holiday on 15 August?
+    4. **Hardly any pattern within the month.** Days 1 to 30 have between 4'339 and 5'902 arrivals, and day 31 is lower simply because it exists in only seven months. The 15th is the highest (5'902). *Interpretation:* This is mainly the holiday on 15 August (Ferragosto), the peak of the Italian summer traffic: 1'377 arrivals on 15 August against 954 and 938 on the days before and after. Without August, the 15th (4'525) is only slightly above the 14th (4'274) and the 16th (4'318).
 
     ### Task 5.2b - Hypothesis
 
@@ -2236,7 +2236,7 @@ def _(mo):
     mo.md(r"""
     ### Task 5.2c - Result
 
-    **Send for Credit Collection is extremely batched, but less often than we expected.** All 59'013 events fall on just **11 days**, with a median of 5'011 cases per day and up to 9'136. The ten largest days hold 99.6 % of the events. The hand-overs are 9 to 25 months apart, so usually less than once a year. *Interpretation:* The hand-over is a rare administrative decision and not a regular step of the process.
+    **Send for Credit Collection is extremely batched, but less often than we expected.** All 59'013 events fall on just **11 days**, with a median of 5'011 cases per day and up to 9'136. The ten largest days hold 99.6 % of the events. The hand-overs are 9 to 25 months apart, until 2007 about once a year, afterwards only every 13 to 25 months. *Interpretation:* The hand-over is a rare administrative decision and not a regular step of the process.
 
     **Send Appeal to Prefecture is continuous, with one exception.** The 4'141 events are spread over 708 days, with a median of only 2 per active day, as we expected. But **520 events fall on one single day**, 25 December 2011, which also makes 2011 the busiest year (773 events). *Interpretation:* Normally each appeal is forwarded on its own. The exception looks like a catch-up or a data import, which Task 5.5 investigates.
 
@@ -2383,7 +2383,7 @@ def _(mo):
 
     **The distribution suggests a deadline of about 150 days.**
 
-    - The number of cases per 10 days stays at about 10'000 up to day 140 (9'998 for days 130 to 139), and then falls to 5'071 and to **370** from day 150 on. Per day it falls from 627 on day 145 to 77 on day 150 and to 30 on day 151, after which it stays at about this low level.
+    - From day 40 to day 139 the number of cases per 10 days lies between 6'470 and 10'169, and directly before the limit it is close to 10'000 (9'998 for days 130 to 139). It then falls to 5'071 and to **370** from day 150 on. Per day it falls from 627 on day 145 to 77 on day 150 and to 30 on day 151, after which it stays at about this low level.
     - **97.69 % of the letters are sent within 150 days.** So the rule is almost always kept, and the many letters shortly before the limit suggest that the police uses all of the time it has.
     - The remaining 2'405 cases (2.31 %) form a thin, slowly falling tail, which fits letters abroad with a longer deadline. Only 36 cases are later than 360 days.
 
@@ -2622,7 +2622,7 @@ def _(mo):
 
     **The distribution changes clearly.** The second hump around 130 days has disappeared, and there is only one peak around 48 to 54 days. The hard limit at 150 days has been replaced by a clear drop at about 60 days: from 267 cases on day 59 to 170 on day 60, to 115 on day 61.
 
-    **Interpretation.** This fits the change of article 201 by the law 120/2010, which shortened the deadline from 150 to 90 days ([edotto](https://edotto.com/articolo/notifica-pi-breve-per-le-multe)). So the 150 days of Task 5.4c only apply to the time before this change, and the full log mixes two regimes. The drop at 60 days instead of 90 makes sense if the notification must arrive within the deadline: 60 days for sending plus up to 30 days of transit (the 90th percentile of Task 5.4) gives 90 days. This shows why concept drift matters: a single distribution for the full log would hide the change.
+    **Interpretation.** This fits the change of article 201 by the law 120/2010, which shortened the deadline from 150 to 90 days ([edotto](https://edotto.com/articolo/notifica-pi-breve-per-le-multe)). So the 150 days of Task 5.4c only apply to the time before this change, and the full log mixes two regimes. The drop lies at 60 days instead of 90. A possible reason is that the police keeps a margin of up to 30 days for the transit of the letter, so that the notification also arrives within the 90 days. Before the change, however, the police used the full 150 days (Task 5.4c), so the log cannot confirm this reason. This shows why concept drift matters: a single distribution for the full log would hide the change.
 
     About 10 % of the cases are still later than 90 days. These could be letters abroad or cases whose owner had to be identified first. The source does not tell us the exact date from which the new rule applied, so the date of 1 September comes from the task.
     """)
@@ -2754,7 +2754,7 @@ def _(mo):
 
     ### Task 6.1c - Hypothesis
 
-    *If Send Fine is on the same day as Create Fine, so is Insert Fine Notification.* In the few cases we have seen with this pattern (C20817, C17607, C19089 in Task 5.1) all three events fall on one day, which suggests a fine that is handed over directly. So we expect the constraint to hold with **very few violations**.
+    *If Send Fine is on the same day as Create Fine, so is Insert Fine Notification.* In the few cases we have seen with this pattern (C20817 and C10852 in Task 5.1) all three events fall on one day, which suggests a fine that is handed over directly. So we expect the constraint to hold with **very few violations**.
     """)
     return
 
@@ -2920,7 +2920,7 @@ def _(mo):
 
     **Constraint:** *Add penalty happens exactly 60 days after Insert Fine Notification.*
 
-    We expect this to be satisfied in almost all cases, because the delays in Task 5.1 are 60 days at the median and at both quartiles. It would show that the penalty is added automatically on a fixed date, which matters for the penalties on nearly paid fines in Task 5.1. We expect exceptions at most where appeals interrupt the process.
+    We expect this to be satisfied in almost all cases. It would show that the penalty is added automatically on a fixed date, which matters for the penalties on nearly paid fines in Task 5.1. We expect exceptions at most where appeals interrupt the process.
     """)
     return
 
@@ -3071,6 +3071,289 @@ def _(mo):
     **We consider this behaviour expected.** In 1'521 of the 1'523 cases something is still outstanding at credit collection, with a median of 38. In case A1017, for example, the offender pays 32 (the fine of 21 and the expenses of 11) after the penalty was added, and the remaining 21.50 is handed over two years later. The offender pays only part of the fine with its penalty, and the police hands the remaining debt over to the collection agency. The model is wrong here, because it treats every payment as if it ended the case or led to another payment.
 
     **Update of the BPMN model.** Add a third outgoing flow to the XOR gateway G5 behind *Payment*, leading to *Send for Credit Collection*. The model stays sound, because this is only one more branch of an XOR split and the graph still has no AND gateway. The update allows more than intended: *Create Fine > Payment > Send for Credit Collection* would also fit, although a fine is normally only handed over after the penalty. To exclude this, the model would need a separate *Payment* task behind *Add penalty*, which leads to either credit collection or the end of the process.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # Session 7
+
+    ## Task 7.1
+
+    ### Task 7.1 - Hypothesis
+
+    *If the police has sent the fine letter after the deadline required by law, then the case is not sent for credit collection.* We use the hypothetical deadline of 360 days after *Create Fine*, so the explanation is "*Send Fine* is more than 360 days after *Create Fine*", and the outcome is "the case has no *Send for Credit Collection*". A fine that is notified too late should no longer be valid, so a police that follows the law should not try to collect it.
+
+    Task 5.4c showed that only 36 letters are sent later than 360 days, so the recall will be tiny. We also expect a **low precision**: the penalty is added automatically after exactly 60 days (Task 5.4a), and the cases are handed over to credit collection in rare batches (Task 5.5). We do not expect such a batch run to check the date of the letter.
+    """)
+    return
+
+
+@app.cell
+def _(RULE_COLUMNS, case_log_s5, delay_days, event_log_s5, has_activity, mo, pd, show_case):
+    # explanation: the fine letter is sent more than 360 days after the fine was created (hypothetical deadline)
+    _send_delay = delay_days('Create Fine', 'Send Fine').reindex(case_log_s5.index)
+    late_letter = _send_delay > 360
+    # outcome: the case is not sent for credit collection
+    not_collected = ~case_log_s5['credit_collection']
+
+    _tp = late_letter & not_collected
+    _fp = late_letter & ~not_collected
+    _sent = has_activity('Send Fine')
+
+    # which sequences of activities do the recalled cases and the false positives have?
+    _variants = pd.DataFrame({
+        'true positives': case_log_s5.loc[_tp, 'seq_variant'].value_counts(),
+        'false positives': case_log_s5.loc[_fp, 'seq_variant'].value_counts(),
+    }).fillna(0).astype(int)
+    _variants = _variants.loc[_variants.sum(axis=1).sort_values(ascending=False).index]
+    _variants.index = [' > '.join(_variant) for _variant in _variants.index]
+    _fp_ids = _fp[_fp].index
+
+    mo.vstack([
+        mo.md(f"""
+    - Cases whose letter is sent more than 360 days after *Create Fine* (explanation): **{num(late_letter.sum())}**, of {num(_sent.sum())} cases with *Send Fine*
+    - Cases sent exactly on day 360 (not counted as late): **{num((_send_delay == 360).sum())}**
+    - **True positives** (late and not sent for credit collection): **{num(_tp.sum())}**
+    - **False positives** (late, but sent for credit collection): **{num(_fp.sum())}**
+    - **Precision: {_tp.sum() / late_letter.sum():.4f}**, recalled cases: {num(_tp.sum())} of {num(not_collected.sum())} cases that are not sent for credit collection
+    - For comparison, share of all cases with *Send Fine* that are not sent for credit collection: **{not_collected[_sent].mean():.4f}**
+    """),
+        mo.md("Sequences of activities of the late cases:"),
+        _variants,
+        mo.md(f"**False positive case {_fp_ids[0]}**"),
+        show_case(event_log_s5, _fp_ids[0], RULE_COLUMNS),
+    ])
+    return late_letter, not_collected
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 7.1 - Result
+
+    **Precision 0.4167, with 15 true positives and 21 false positives.** 36 of the 103'987 cases with *Send Fine* are sent more than 360 days after *Create Fine* (one more case is sent exactly on day 360 and counts as in time). 15 of them are not sent for credit collection (true positives), 21 are (false positives). The explanation recalls only 15 of the 91'357 cases that are not sent for credit collection.
+
+    **The hypothesis is rejected.** The precision is even slightly lower than the share of all sent fines that are not sent for credit collection (0.4325). Knowing that the letter was late therefore tells us nothing about credit collection.
+
+    The table of sequences shows that most true positives have another explanation: 6 of the 15 cases contain a *Payment*, and one ends with an appeal to the prefecture. Only the 8 cases of the variant *Create Fine > Send Fine* could be fines that were dropped because the letter was late, and the log does not show whether this was the reason. All 21 false positives follow the standard sequence up to *Send for Credit Collection*.
+
+    **Case A16236 (false positive).** A fine of 36 is created on 03.08.2007 and sent only on 18.11.2008, 473 days later. It is notified on 20.12.2008, the penalty follows 60 days later on 18.02.2009, and on 15.10.2010 the outstanding 87.50 are sent for credit collection. Nothing in the log shows that the late letter was noticed. *Interpretation:* Like the penalty, the hand-over to credit collection seems to be decided without checking when the letter was sent. Under the real deadline of 150 days (Task 5.4c) such a fine should not be valid (our assumption, not checked against the legal text), so the offender could contest the collection. *Improvement of the process:* check the date of the letter before a fine is sent for credit collection.
+
+    ## Task 7.2
+
+    ### Task 7.2 - Hypothesis
+
+    *If a case has a dismissal value other than NIL, `#` and `G`, then it is of the variant Create Fine > Send Fine.* The description of the log only documents `#` (prefecture) and `G` (judge), but Task 2.5 (Part 2) and Task 3.1 showed that other codes occur: 2'577 cases have a value other than NIL, and 2'073 of them are dismissed with `#` or `G`, which leaves about 500 cases with other codes. A fine that the police itself cancels before it is notified would stop after *Send Fine* and needs a code of its own, so we expect most of these codes to occur only in this variant. A code that also occurs in cases with a notification, an appeal or a payment cannot mean such a dismissal by the police and is excluded.
+
+    As the dismissal value of a case we use its latest value. This is the value of *Create Fine*, unless an appeal changes it later (only to `#` or `G`). We expect a small recall, because the variant has 20'385 cases and only about 500 cases have one of the other codes.
+    """)
+    return
+
+
+@app.cell
+def _(CASE_ID, case_log_s5, event_log_s5, mo, pd):
+    # outcome: the case is of the variant Create Fine > Send Fine
+    only_sent = case_log_s5['seq_variant'] == ('Create Fine', 'Send Fine')
+    # dismissal value of a case: its latest value, i.e. the value of Create Fine unless an appeal changed it
+    case_dismissal = (event_log_s5.dropna(subset=['dismissal']).groupby(CASE_ID)['dismissal'].last()
+                      .reindex(case_log_s5.index))
+
+    _table = pd.crosstab(case_dismissal, only_sent).rename(
+        columns={True: 'cases of the variant', False: 'other cases'}).rename_axis(index='dismissal', columns=None)
+    _table['precision'] = (_table['cases of the variant'] / (_table['cases of the variant'] + _table['other cases'])).round(4)
+    _table = _table.sort_values(['precision', 'cases of the variant'], ascending=False)
+
+    # maximal set with precision 1.0: every value whose cases all belong to the variant
+    POLICE_DISMISSAL = sorted(_table.index[_table['other cases'] == 0])
+    _explanation = case_dismissal.isin(POLICE_DISMISSAL)
+    _tp = _explanation & only_sent
+
+    mo.vstack([
+        mo.md("Cases per dismissal value (latest value of the case) and variant:"),
+        _table,
+        mo.md(f"""
+    - Maximal set with precision 1.0: **{', '.join(POLICE_DISMISSAL)}** ({len(POLICE_DISMISSAL)} values)
+    - Cases with one of these values: **{num(_explanation.sum())}**, of which of the variant: **{num(_tp.sum())}**
+    - **Precision: {_tp.sum() / _explanation.sum():.4f}**
+    - **Recalled cases: {num(_tp.sum())}** of {num(only_sent.sum())} cases of the variant (recall {_tp.sum() / only_sent.sum():.2%})
+    - Cases of the variant without one of these values: **{num((only_sent & ~_explanation).sum())}**, of which with dismissal value NIL: **{num((only_sent & (case_dismissal == 'NIL')).sum())}**
+    """),
+    ])
+    return POLICE_DISMISSAL, case_dismissal, only_sent
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 7.2 - Result
+
+    **The maximal set is {2, 3, 5, A, B, E, F, I, J, K, M, N, Q, R, T, U, V} (17 values). It explains the variant with precision 1.0 and recalls 444 of its 20'385 cases (2.18 %).** The hypothesis is confirmed: most of the undocumented codes occur only in this variant.
+
+    The set is maximal, because every other value of the log also occurs outside the variant: `D` (31 cases in the variant, 3 outside), `C` (6 and 2), `Z` (5 and 1), `@`, `$` and `4` (only outside), as well as NIL, `#` and `G`. Adding any of them would add a false positive. Since a value can only belong to the set if all of its cases are of the variant, there is exactly one maximal set. The most frequent values in it are `A` (213 cases), `T` (111), `I` (29) and `N` (28). The cases outside the variant with `D`, `C` and `Z` contain an appeal to the prefecture, a payment or a credit collection.
+
+    The explanation leaves 19'941 cases of the variant unexplained, and 19'899 of them have the value NIL, i.e. no code at all. *Interpretation:* The codes seem to record why the police dropped a fine, but the log does not document their meaning, and for most fines of this variant no code was entered. This supports the assumption of Task 7.3 that the code was forgotten in these cases. *Recommendation data collection:* Document the dismissal codes, and require a code when a fine is closed without payment or credit collection.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Task 7.3
+
+    ### Task 7.3 - Approach and hypothesis
+
+    We follow the assumption of the task: all cases of the variant *Create Fine > Send Fine* are dismissed by the police (Task 7.2). The search for explanations is done in the rule induction notebook `rule_induction_road_fines_marimo_iox.py` (html export in the submission), in four steps:
+
+    1. **Baseline.** We keep only the unresolved cases: not of the variant *Create Fine > Send Fine*, not dismissed by a judge or the prefecture (`dismissal` `G` or `#`), and not fully paid (fine amount plus expenses minus payments is above 0). The outcome to explain is "not sent for credit collection".
+    2. **Hiding.** We hide `collected`, `Send_for_Credit_Collection::count` and the variant, because they contain the outcome. The first induction then proposed rules with `duration`, `end_time` and `no_of_events`, for example "`duration` at most 383 days". These features are measured over the whole case, including a later *Send for Credit Collection*. Since the hand-over comes about 16 months after the penalty (Task 5.4a), a short case is almost by definition not collected. We hide them as well.
+    3. **Rule induction.** Among the rules suggested on the remaining features we store those that are meaningful from a business point of view. After each stored rule the suggestions are induced again on the cases that are still unclaimed. Where a suggested rule contains a condition without a business reason, we drop that condition and keep the rule only if its precision stays above 0.95.
+    4. **Case inspection.** We check the stored rules below on their recalled cases.
+
+    **Hypothesis.** From the earlier tasks we expect two kinds of unresolved cases that are not collected: appeals to the prefecture without a recorded result (Task 6.1b found 3'224 appeals that are never followed by a result), and fines with a small rest after a payment (Task 2.5 of Part 2 showed many payments that leave an amount outstanding).
+
+    Below we evaluate the stored rules again with our own code on the same population, independently of the rule induction notebook.
+    """)
+    return
+
+
+@app.cell
+def _(CASE_ID, case_dismissal, case_log_s5, event_log_s5, has_activity, mo, only_sent, pd):
+    # the same population as in the rule induction notebook (cell 2.2 there): not of the variant
+    # Create Fine > Send Fine, not dismissed by a judge or the prefecture, and not fully paid
+    _cases = event_log_s5.groupby(CASE_ID)
+    _owed = (_cases['amount'].last() + _cases['expense'].sum() - _cases['paymentAmount'].sum()).reindex(case_log_s5.index)
+    _fully_paid = _owed.round(2) <= 0
+    _dismissed = case_dismissal.isin(['#', 'G'])
+    unresolved = ~only_sent & ~_dismissed & ~_fully_paid
+    # outcome: an unresolved case is not sent for credit collection
+    not_collected_73 = unresolved & ~case_log_s5['credit_collection']
+
+    # the three rules we stored in the rule induction notebook
+    rule_open_appeal = (has_activity('Insert Date Appeal to Prefecture')
+                        & ~has_activity('Notify Result Appeal to Offender'))
+    rule_not_notified = ~has_activity('Insert Fine Notification')
+    n_payments_73 = case_log_s5['seq_variant'].apply(lambda variant: variant.count('Payment'))
+    rule_two_payments = n_payments_73 >= 2
+
+
+    def _evaluate(name, rule):
+        _claimed = rule & unresolved
+        _tp = int((_claimed & not_collected_73).sum())
+        return {'rule': name, 'claimed cases': int(_claimed.sum()), 'true positives (recalled)': _tp,
+                'false positives': int(_claimed.sum()) - _tp, 'precision': round(_tp / _claimed.sum(), 4),
+                'recall %': round(100 * _tp / not_collected_73.sum(), 2)}
+
+
+    _rules = pd.DataFrame([
+        _evaluate('1: open appeal to the prefecture', rule_open_appeal),
+        _evaluate('2: fine never notified', rule_not_notified),
+        _evaluate('3: at least two payments', rule_two_payments),
+        _evaluate('1, 2 or 3', rule_open_appeal | rule_not_notified | rule_two_payments),
+        _evaluate('for comparison: exactly one payment', n_payments_73 == 1),
+    ]).set_index('rule')
+
+    mo.vstack([
+        mo.md(f"""
+    - Unresolved cases: **{num(unresolved.sum())}**, of which not sent for credit collection (outcome): **{num(not_collected_73.sum())}**
+    - Cases that match rules 1 and 2: **{num((rule_open_appeal & rule_not_notified & unresolved).sum())}**, rules 1 and 3: **{num((rule_open_appeal & rule_two_payments & unresolved).sum())}**, rules 2 and 3: **{num((rule_not_notified & rule_two_payments & unresolved).sum())}**
+    """),
+        _rules,
+    ])
+    return (
+        not_collected_73,
+        rule_not_notified,
+        rule_open_appeal,
+        rule_two_payments,
+        unresolved,
+    )
+
+
+@app.cell
+def _(
+    RULE_COLUMNS,
+    case_log_s5,
+    event_log_s5,
+    mo,
+    not_collected_73,
+    pd,
+    rule_not_notified,
+    rule_open_appeal,
+    rule_two_payments,
+    show_case,
+):
+    def _variants(rule):
+        # the most frequent sequences of activities among the recalled cases of a rule
+        _counts = case_log_s5.loc[rule & not_collected_73, 'seq_variant'].value_counts().head(5)
+        _table = pd.DataFrame({'cases': _counts})
+        _table.index = [' > '.join(_variant) for _variant in _table.index]
+        return _table
+
+
+    _appeal_ids = case_log_s5.index[rule_open_appeal & not_collected_73]
+    _two_payments = rule_two_payments & not_collected_73
+    _rest = case_log_s5.loc[_two_payments, 'final_outstanding_amount']
+    _appeal_year = case_log_s5.loc[_appeal_ids, 'start'].dt.year.value_counts().sort_index().rename('cases')
+    _appeal_year.index = _appeal_year.index.astype(str)
+
+    mo.vstack([
+        mo.md("**Rule 1 (open appeal):** most frequent sequences of the recalled cases"),
+        _variants(rule_open_appeal),
+        mo.md("Recalled cases of rule 1 by year of *Create Fine*:"),
+        _appeal_year.to_frame().T,
+        mo.md(f"**Case {_appeal_ids[0]} (rule 1)**"),
+        show_case(event_log_s5, _appeal_ids[0], RULE_COLUMNS),
+        mo.md("**Rule 2 (never notified):** most frequent sequences of the recalled cases"),
+        _variants(rule_not_notified),
+        mo.md("**Case A127 (rule 2), the case of Task 4.2c**"),
+        show_case(event_log_s5, 'A127', RULE_COLUMNS),
+        mo.md("**Rule 3 (at least two payments):** most frequent sequences of the recalled cases"),
+        _variants(rule_two_payments),
+        mo.md(f"Outstanding amount at the end of the recalled cases of rule 3: median **{_rest.median():g}**, quartiles {_rest.quantile(0.25):g} and {_rest.quantile(0.75):g}"),
+        mo.md("**Case A10798 (rule 3), the case of Task 5.1b**"),
+        show_case(event_log_s5, 'A10798', RULE_COLUMNS),
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Task 7.3 - Result
+
+    The population has **67'635 unresolved cases, of which 8'625 are not sent for credit collection** (the same numbers as in the rule induction notebook). We found **three explanations of type (a)**, each with a precision above 0.99 and well above 200 recalled cases:
+
+    | Explanation | Precision | Recalled cases | False positives |
+    |---|---|---|---|
+    | 1: open appeal to the prefecture | 1.0000 | 1'284 | 0 |
+    | 2: fine never notified | 1.0000 | 704 | 0 |
+    | 3: at least two payments | 0.9941 | 3'697 | 22 |
+    | 1, 2 or 3 | 0.9961 | 5'608 (65.02 % of the outcome) | 22 |
+
+    64 cases match rules 1 and 2, 13 match rules 1 and 3, and none matches rules 2 and 3. In the rule induction notebook, where the rules are stored one after the other, the second rule therefore recalls 640 additional cases after the first one, and the third rule 3'684 more.
+
+    **Explanation 1: *If an appeal to the prefecture has been filed and its result has not been notified to the offender, then the case is not sent for credit collection.*** (*Insert Date Appeal to Prefecture* at least once and no *Notify Result Appeal to Offender*.)
+
+    - *Why meaningful:* While an appeal is undecided, the fine is contested, and it would be unfair to hand it over to a collection agency. The rule describes a waiting state of the process.
+    - *How we obtained it:* baseline, hiding of the outcome features and of the three time and size features, then rule induction (the rule was suggested as is). Case inspection below.
+    - *Case inspection:* 1'170 of the 1'284 cases end with *Send Appeal to Prefecture*, and the cases come from all years (193 from 2000, 135 from 2012). So most of these appeals are not running at the end of the log, they simply never get a result in the log, as already seen in Task 6.1b. In case A10125 a fine of 36 is sent with expenses of 13 and notified on 26.07.2007. The offender appeals on 01.08.2007 and pays the full 49 on 14.09.2007. On 24.09.2007, 60 days after the notification, the penalty is added anyway, which leaves 38 outstanding, and on the same day the appeal is sent to the prefecture. Nothing follows. *Interpretation:* The appeal stops the collection, but because the result is never recorded, the 38 stay open forever. Whether the prefecture decided at all, the log does not show. *Recommendation data collection:* record the result of every appeal (see Task 6.1b).
+
+    **Explanation 2: *If a fine has never been notified, then the case is not sent for credit collection.*** (no *Insert Fine Notification*.)
+
+    - *Why meaningful:* The penalty is added 60 days after the notification (Task 5.4a), and credit collection follows the penalty. Without a notification the fine never reaches this part of the process, and an offender who was never notified cannot be pursued.
+    - *How we obtained it:* the same steps. The rule was suggested as is, before and after the first rule had been stored.
+    - *Case inspection:* The most frequent sequences are *Create Fine > Payment > Send Fine* (343 cases), *Create Fine > Send Fine > Payment* (236) and *Create Fine > Payment* (56), so the offender paid before or right after the letter. What remains is small: the median outstanding amount is 6.71 and three quarters of the cases have 10 or less. 6.71 is exactly the expense of a letter in 2001 (Task 2.7), and 568 of the 704 cases are from 2000 to 2002. In 372 of the 704 cases exactly the expense of the letter remains. Case A127 (Task 4.2c) is typical: the offender pays the full fine of 35 on 04.08.2006, two days after it was created. The letter follows on 12.12.2006 anyway and adds expenses of 11, which are never paid. *Interpretation:* These fines were paid early, and what remains is mostly the postage of a letter sent afterwards. The police does not notify them, so they never get a penalty and are never collected. From a business point of view they are settled, although the log shows a small amount outstanding.
+
+    **Explanation 3: *If the offender has made at least two payments, then the case is not sent for credit collection.*** (*Payment* at least twice.)
+
+    - *Why meaningful:* The recalled cases are the pattern of Task 5.1b: the offender pays the fine and its expenses in two steps, mostly one payment before and one after the penalty (3'239 cases of the sequence *... Insert Fine Notification > Payment > Add penalty > Payment*). In 3'687 of the 3'697 cases the payments add up to at least the initial fine plus expenses (± 1), and the rest is close to the penalty (median 35.17, quartiles 31.30 and 36.50). So the offender paid what the original notice asked for, and only the penalty stays open.
+    - *How we obtained it:* the same baseline and hiding, then rule induction after the first two rules had been stored. The suggested rule was "at least two payments and *Create Fine* before about September 2003" (precision 0.999, 2'081 cases). We found no business reason for the date limit and dropped it; without it the rule keeps a precision of 0.9941 and recalls 3'697 cases. Case inspection below.
+    - *Case inspection:* In case A10798 (Task 5.1b) the offender pays 22 of the 35 on 25.09.2007, the penalty is added on 10.10.2007, and ten days later the offender pays the missing 13. The case ends with 22 outstanding, exactly the penalty, and is never handed over. The 22 false positives are cases with two or more payments that are sent for credit collection anyway. *Interpretation:* Apparently the police does not hand over a penalty that remains after the original amount was paid in two steps. Why a single payment is handed over much more often (precision of "exactly one payment": 0.632), the log does not show. *Question:* Is the remaining penalty waived, for example because the first payment was made in time?
+
+    **Hypothesis.** Confirmed. The appeals without a result are explanation 1. The small rest after a payment appears twice: as postage for fines without notification (explanation 2) and as a remaining penalty after two payments (explanation 3). The amount paid alone does not explain the outcome: the suggested rule `paymentAmount::sum >= 49.2` only reaches a precision of 0.83. What matters is that the fine was paid in two steps. Together the three explanations cover 65.02 % of the outcome. The remaining 3'017 cases are not yet explained.
     """)
     return
 
